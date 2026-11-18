@@ -23,6 +23,7 @@ from agent_watch.store import Store
 from agent_watch.ui.theme import (
     ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT, fmt_duration, short_model,
 )
+from agent_watch.ui.timeline import TimelineView
 from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, QuotaPanel, TotalsBar
 
 EMPTY_TEXT = "Henüz ajan yok — Claude, agy ya da Codex çalıştırınca burada görünecek."
@@ -104,6 +105,9 @@ class DashboardScreen(Screen):
     #quota.-has-data {{ display: block; }}
     #sidebar {{ background: {SURFACE}; border-right: solid {BORDER}; }}
     #grid {{ background: {BG}; }}
+    #timeline {{ width: 1fr; display: none; }}
+    DashboardScreen.-timeline #grid {{ display: none; }}
+    DashboardScreen.-timeline #timeline {{ display: block; }}
     #events {{ height: 8; background: {BG}; border-top: solid {BORDER}; }}
     DashboardScreen.-empty #body {{ display: none; }}
     DashboardScreen.-empty #empty {{ display: block; }}
@@ -122,6 +126,7 @@ class DashboardScreen(Screen):
         Binding("/", "open_filter", "Filtre"),
         Binding("escape", "escape", "Temizle", show=False),
         Binding("n", "toggle_notifications", "Bildirim"),
+        Binding("t", "toggle_timeline", "Zaman"),
         Binding("v", "toggle_compact", "Kompakt"),
         Binding("o", "open_transcript", "Klasör"),
         Binding("r", "refresh_quota", "Kota"),
@@ -154,6 +159,7 @@ class DashboardScreen(Screen):
         with Horizontal(id="body"):
             yield AgentList(id="sidebar")
             yield CardGrid(id="grid")
+            yield TimelineView(id="timeline")
             yield QuotaPanel(id="quota")
         yield EventLog(id="events")
         yield TotalsBar(id="totals")
@@ -294,6 +300,24 @@ class DashboardScreen(Screen):
         totals = self.store.totals(self.selected_key or "")
         self.query_one(TotalsBar).update_totals(totals, elapsed)
         self._apply_card_selection()
+        self._refresh_timeline(now, agents, all_agents)
+
+    def _refresh_timeline(
+        self,
+        now: datetime | None = None,
+        agents: list[Agent] | None = None,
+        all_agents: list[Agent] | None = None,
+    ) -> None:
+        """Push the (filtered) agents into the timeline while it is shown."""
+        if not self._ready or not self.has_class("-timeline"):
+            return
+        if all_agents is None:
+            all_agents = self._session_agents()
+        if agents is None:
+            agents = self._visible_agents(all_agents)
+        self.query_one(TimelineView).set_agents(
+            agents, all_agents, now or _now(), default_key=self.selected_agent_key
+        )
 
     def refresh_sessions(self, changed: set[str], now: datetime | None = None) -> None:
         """Refresh tabs and, when the selected session changed, its widgets."""
@@ -416,8 +440,9 @@ class DashboardScreen(Screen):
         self.query_one("#header", Static).update(text)
 
     def _tick(self) -> None:
-        """Refresh the header clock."""
+        """Refresh the header clock and the growing bars of running agents."""
         self._render_header()
+        self._refresh_timeline()
 
     # ----- selection of agents -----
 
@@ -467,13 +492,24 @@ class DashboardScreen(Screen):
         self.set_focus(None)
 
     def action_escape(self) -> None:
-        """Clear the filter and close the bar."""
+        """Clear the filter and close its bar; otherwise leave the timeline."""
         if self.has_class("-filtering"):
             self.remove_class("-filtering")
             self.filter_text = ""
             self.query_one("#filter-input", Input).value = ""
             self.set_focus(None)
             self._refresh_view()
+        elif self.has_class("-timeline"):
+            self.action_toggle_timeline()
+
+    def action_toggle_timeline(self) -> None:
+        """Swap the card grid for the timeline of the current tab, and back."""
+        self.toggle_class("-timeline")
+        if self.has_class("-timeline"):
+            self._refresh_timeline()
+            self.query_one("#timeline-rows").focus()
+        else:
+            self.set_focus(None)
 
     # ----- actions -----
 
