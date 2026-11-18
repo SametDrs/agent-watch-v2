@@ -485,3 +485,22 @@ async def test_notifications_toggle_with_n() -> None:
         changed = store.apply([ev("s1", "a2", EventKind.END, 9, status=Status.DONE)])
         screen.refresh_sessions(changed)
         assert app.toasts[-1][0] == "Checker"
+
+
+async def test_event_log_uses_short_title_and_skips_usage() -> None:
+    store = build_store()
+    store.find_agent("a1").title = "/plan GOAL: Produce an interface map of this project, then write everything down"
+    app = Host(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log = screen.query_one(EventLog)
+        screen.add_events([
+            ev("s1", "a1", EventKind.TEXT, 6, summary="hi"),
+            ev("s1", "a1", EventKind.USAGE, 7),
+        ])
+        await pilot.pause()
+        rows = ["".join(s.text for s in line) for line in log.lines]
+        assert len(rows) == 1
+        assert "Produce an interface map of this project" in rows[0]
+        assert "/plan" not in rows[0] and "GOAL" not in rows[0]

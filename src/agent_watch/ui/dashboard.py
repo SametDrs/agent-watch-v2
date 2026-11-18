@@ -20,6 +20,7 @@ from agent_watch.model import UNLINKED_SESSION_KEY, Agent, Event, Session, Statu
 from agent_watch.poller import UNLINKED_NAME
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.store import Store
+from agent_watch.titles import short_title
 from agent_watch.ui.theme import (
     ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT, fmt_duration, short_model,
 )
@@ -383,12 +384,14 @@ class DashboardScreen(Screen):
         agent = self.store.find_agent(event.agent_key)
         model = (agent.model if agent else "") or event.model or ""
         title = (agent.title if agent else "") or event.title or event.agent_key
-        return event, title, model_color(model)
+        return event, short_title(title), model_color(model)
 
     def add_events(self, events: list[Event]) -> None:
         """Buffer events per session and show those of the selected session."""
         log = self.query_one(EventLog) if self._ready else None
         for event in events:
+            if EventLog.is_noise(event):
+                continue
             key = self._event_session(event)
             row = self._event_row(event)
             self._logs.setdefault(key, deque(maxlen=LOG_BUFFER)).append(row)

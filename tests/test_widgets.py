@@ -11,6 +11,7 @@ from agent_watch import config
 from agent_watch.model import Agent, Event, EventKind, Source, Status, main_agent_key
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.ui.theme import STATUS_COLORS, STATUS_ICONS, fmt_duration, fmt_tokens, short_model
+from agent_watch.ui.theme import DIM
 from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, QuotaPanel, TotalsBar
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -366,3 +367,67 @@ async def test_codex_quota_line():
         await pilot.pause()
         only_codex = text_of(panel)
         assert "codex  61% used" in only_codex and "resets" not in only_codex
+
+
+def _log_text(log: EventLog) -> list[str]:
+    return ["".join(seg.text for seg in line) for line in log.lines]
+
+
+async def test_event_log_coalesces_identical_consecutive_rows():
+    app = WidgetApp()
+    async with app.run_test() as pilot:
+        log = app.query_one("#log", EventLog)
+        ev = Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TOOL_START, tool="Bash", summary="git status")
+        for _ in range(3):
+            log.add_event(ev, "Agent a", "#ff0000")
+        await pilot.pause()
+        rows = _log_text(log)
+        assert len(rows) == 1
+        assert rows[0].endswith("→ git status ×3")
+        # the counter is dim, not part of the summary style
+        tail = [seg for seg in log.lines[0] if seg.text.strip() == "×3"]
+        assert tail and tail[0].style.color.get_truecolor().hex.lower() == DIM.lower()
+
+
+async def test_event_log_does_not_merge_different_agents_kinds_or_text():
+    app = WidgetApp()
+    async with app.run_test() as pilot:
+        log = app.query_one("#log", EventLog)
+        a1 = Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TOOL_START, summary="x")
+        b1 = Event(ts=T0, session_key="s", agent_key="b", kind=EventKind.TOOL_START, summary="x")
+        a_end = Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TOOL_END, summary="x")
+        a2 = Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TOOL_START, summary="y")
+        for e in (a1, b1, a_end, a2, a2):
+            log.add_event(e, "t", "#ff0000")
+        await pilot.pause()
+        rows = _log_text(log)
+        assert len(rows) == 4
+        assert rows[-1].endswith("→ y ×2") and "×" not in rows[0]
+
+
+async def test_event_log_drops_bare_usage_rows_but_keeps_usage_with_summary():
+    app = WidgetApp()
+    async with app.run_test() as pilot:
+        log = app.query_one("#log", EventLog)
+        log.add_event(Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.USAGE, tokens_out=5), "t", "#f00")
+        log.add_event(Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.USAGE, summary="note"), "t", "#f00")
+        await pilot.pause()
+        rows = _log_text(log)
+        assert len(rows) == 1 and rows[0].endswith("→ note")
+
+
+async def test_event_log_clear_resets_merge_state_and_keeps_following():
+    app = WidgetApp()
+    async with app.run_test() as pilot:
+        log = app.query_one("#log", EventLog)
+        ev = Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TEXT, summary="same")
+        log.add_event(ev, "t", "#f00")
+        log.clear()
+        log.add_event(ev, "t", "#f00")
+        await pilot.pause()
+        assert _log_text(log)[0].endswith("→ same") and len(log.lines) == 1
+        for i in range(60):
+            log.add_event(Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TEXT, summary=f"n{i}"), "t", "#f00")
+        log.add_event(Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TEXT, summary="n59"), "t", "#f00")
+        await pilot.pause()
+        assert log.scroll_y >= log.max_scroll_y - 1

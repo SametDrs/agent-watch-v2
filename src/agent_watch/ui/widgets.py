@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime, timezone
 
 from rich.cells import cell_len
@@ -13,7 +14,7 @@ from textual.widgets import OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from agent_watch import config
-from agent_watch.model import Agent, Event, Source, Status, main_agent_key
+from agent_watch.model import Agent, Event, EventKind, Source, Status, main_agent_key
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.ui.card_mascot import (
     CANVAS_W,
@@ -488,11 +489,19 @@ class EventLog(RichLog):
         kw.setdefault("markup", False)
         kw.setdefault("wrap", False)
         super().__init__(**kw)
+        self._entries: deque[list] = deque(maxlen=self.max_lines or None)
 
-    def add_event(self, event: Event, title: str, color: str) -> None:
-        """Append one formatted event line."""
+    @staticmethod
+    def is_noise(event: Event) -> bool:
+        """Return True for rows with no information for the user (bare usage ticks)."""
+        return event.kind == EventKind.USAGE and not event.summary
+
+    @staticmethod
+    def _text(event: Event) -> str:
+        return " ".join((event.summary or (event.tool or event.kind.value)).split())
+
+    def _format(self, event: Event, title: str, color: str, count: int) -> Text:
         ts = event.ts.astimezone().strftime("%H:%M:%S")
-        summary = event.summary or (event.tool or event.kind.value)
         title_color = (
             SOURCE_COLORS[_infer_source(event.agent_key)]
             if (not color or color in _MODEL_HEXES)
@@ -502,8 +511,34 @@ class EventLog(RichLog):
         line.append(f"{ts}  ", style=DIM)
         line.append(title, style=title_color)
         line.append("  → ", style=DIM)
-        line.append(" ".join(summary.split()), style=TEXT)
-        self.write(line)
+        line.append(self._text(event), style=TEXT)
+        if count > 1:
+            line.append(f" ×{count}", style=DIM)
+        return line
+
+    def add_event(self, event: Event, title: str, color: str) -> None:
+        """Append one event line; identical consecutive rows of one agent merge into '×N'."""
+        if self.is_noise(event):
+            return
+        text = self._text(event)
+        last = self._entries[-1] if self._entries else None
+        if last is not None and last[0].agent_key == event.agent_key and last[0].kind == event.kind and last[4] == text:
+            last[0], last[1], last[2], last[3] = event, title, color, last[3] + 1
+            self._redraw()
+            return
+        self._entries.append([event, title, color, 1, text])
+        self.write(self._format(event, title, color, 1))
+
+    def _redraw(self) -> None:
+        """Rewrite all rows (used when the last row's counter changes)."""
+        super().clear()
+        for event, title, color, count, _ in self._entries:
+            self.write(self._format(event, title, color, count))
+
+    def clear(self) -> "EventLog":
+        """Clear the log and its merge state."""
+        self._entries.clear()
+        return super().clear()
 
 
 class TotalsBar(Static):
