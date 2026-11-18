@@ -1,0 +1,12 @@
+{
+  "agentType": "Explore",
+  "isBuiltIn": true,
+  "description": "lorem ipsum task description 6",
+  "toolUseId": "toolu_0179qLmAWoeeaKwntGKbHbti",
+  "spawnDepth": 1,
+  "requestShape": "background",
+  "requestNonInteractive": true,
+  "model": "sonnet",
+  "pickedEffortModel": "claude-opus-5-5",
+  "finished": true
+}

@@ -1,0 +1,24 @@
+{
+  "pid": 24116,
+  "sessionId": "9af43e82-5772-4625-a46a-7cffea98c243",
+  "cwd": "C:\\Users\\user",
+  "startedAt": 1794929238710,
+  "procStart": "134394028359371970",
+  "version": "2.1.326",
+  "peerProtocol": 1,
+  "peerFeatures": [
+    "notify_idle",
+    "artifact_yield"
+  ],
+  "kind": "interactive",
+  "entrypoint": "cli",
+  "pidDomain": "win32:userpc",
+  "asksForConvertedSkills": false,
+  "messagingSocketPath": "\\\\.\\pipe\\LOCAL\\cc-msg-00000000000000000000000000000000",
+  "name": "lorem-ipsum-session",
+  "nameSource": "derived",
+  "nameSince": 1794929238710,
+  "status": "busy",
+  "updatedAt": 1794931388624,
+  "statusUpdatedAt": 1794931388624
+}

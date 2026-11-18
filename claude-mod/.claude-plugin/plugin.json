@@ -1,0 +1,14 @@
+{
+  "name": "agent-watch",
+  "version": "0.1.0",
+  "description": "Opens the Agent Watch window",
+  "author": { "name": "SametDrs" },
+  "userConfig": {
+    "exe": {
+      "type": "string",
+      "title": "Agent Watch executable",
+      "description": "Path to agent-watch.exe",
+      "default": "agent-watch"
+    }
+  }
+}

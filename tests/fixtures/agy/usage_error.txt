@@ -1,0 +1,2 @@
+Error: failed to fetch usage: rpc error: code = Unavailable desc = connection closed before server preface received
+agy: unable to retrieve quota information (not logged in or network unreachable). Run `agy auth login` and retry.

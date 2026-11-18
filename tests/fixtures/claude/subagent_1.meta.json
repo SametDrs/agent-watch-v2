@@ -1,0 +1,11 @@
+{
+  "agentType": "web-fetch",
+  "isBuiltIn": true,
+  "description": "lorem ipsum task description 1",
+  "toolUseId": "toolu_01PWRxJyioDgLutvTm68Qk31",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "requestNonInteractive": false,
+  "pickedEffortModel": "claude-sonnet-5-5",
+  "finished": true
+}
