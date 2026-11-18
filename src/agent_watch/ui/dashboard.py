@@ -13,14 +13,14 @@ from textual import events
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.screen import Screen
-from textual.widgets import Footer, Static
+from textual.widgets import Footer, Input, Static
 
 from agent_watch.config import model_color
 from agent_watch.model import UNLINKED_SESSION_KEY, Agent, Event, Session, Status, main_agent_key
 from agent_watch.poller import UNLINKED_NAME
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.store import Store
-from agent_watch.ui.theme import ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT
+from agent_watch.ui.theme import ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT, short_model
 from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, QuotaPanel, TotalsBar
 
 EMPTY_TEXT = "Henüz ajan yok — Claude, agy ya da Codex çalıştırınca burada görünecek."
@@ -30,6 +30,22 @@ _UNSET: Any = object()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def agent_matches(agent: Agent, query: str) -> bool:
+    """Return True when every space-separated term is found (case-insensitive) in the agent.
+
+    The searched text is the title, source, status word and model (raw and short form).
+    The main agent also answers to "main". An empty query matches everything.
+    """
+    terms = query.lower().split()
+    if not terms:
+        return True
+    title = "main" if agent.is_main else (agent.title or agent.key)
+    hay = " ".join(
+        (title, agent.source.value, agent.status.value, agent.model, short_model(agent.model) if agent.model else "")
+    ).lower()
+    return all(term in hay for term in terms)
 
 
 class TabBar(Static):
@@ -73,6 +89,13 @@ class DashboardScreen(Screen):
     CSS = f"""
     DashboardScreen {{ background: {BG}; color: {TEXT}; }}
     #header {{ height: 1; padding: 0 1; background: {SURFACE}; color: {TEXT}; }}
+    #filterbar {{ height: 1; padding: 0 1; background: {SURFACE}; display: none; }}
+    DashboardScreen.-filtering #filterbar {{ display: block; }}
+    DashboardScreen.-empty #filterbar {{ display: none; }}
+    #filter-prefix {{ width: 2; color: {ACCENT}; background: {SURFACE}; }}
+    #filter-input {{ width: 1fr; height: 1; border: none; padding: 0; background: {SURFACE}; color: {TEXT}; }}
+    #filter-input:focus {{ border: none; background-tint: transparent; }}
+    #filter-count {{ width: auto; margin-left: 2; background: {SURFACE}; }}
     #body {{ height: 1fr; background: {BG}; }}
     #empty {{ height: 1fr; content-align: center middle; color: {DIM}; display: none; }}
     #quota {{ width: 36; padding: 0 1; background: {SURFACE}; border-left: solid {BORDER}; display: none; }}
@@ -87,11 +110,15 @@ class DashboardScreen(Screen):
     DashboardScreen AgentCard.-selected {{ border: round {ACCENT}; background: {SURFACE_HI}; }}
     """
 
+    AUTO_FOCUS = "AgentList"  # never autofocus the (hidden) filter input
+
     BINDINGS = [
         Binding("1", "select_tab(1)", "Sekme", key_display="1-9"),
         *[Binding(str(n), f"select_tab({n})", f"Sekme {n}", show=False) for n in range(2, 10)],
         Binding("tab", "next_tab", "Sonraki", priority=True),
         Binding("shift+tab", "prev_tab", "Önceki", show=False, priority=True),
+        Binding("/", "open_filter", "Filtre"),
+        Binding("escape", "escape", "Temizle", show=False),
         Binding("v", "toggle_compact", "Kompakt"),
         Binding("o", "open_transcript", "Klasör"),
         Binding("r", "refresh_quota", "Kota"),
@@ -108,11 +135,16 @@ class DashboardScreen(Screen):
         self._logs: dict[str, deque[tuple[Event, str, str]]] = {}
         self._quota: dict[str, tuple[float | None, datetime | None]] = {}
         self._codex_limits: CodexLimits | None = None
+        self.filter_text = ""  # global across tabs; applied to cards, list and timeline
         self._ready = False
 
     def compose(self) -> ComposeResult:
         yield Static(id="header")
         yield TabBar(id="tabs")
+        with Horizontal(id="filterbar"):
+            yield Static("/ ", id="filter-prefix")
+            yield Input(placeholder="agent, source, status, model", id="filter-input")
+            yield Static(id="filter-count")
         yield Static(EMPTY_TEXT, id="empty")
         with Horizontal(id="body"):
             yield AgentList(id="sidebar")
@@ -216,12 +248,30 @@ class DashboardScreen(Screen):
         session = self.store.sessions.get(self.selected_key or "")
         return list(session.agents.values()) if session else []
 
+    def _visible_agents(self, agents: list[Agent]) -> list[Agent]:
+        """Return the agents that match the active filter."""
+        return [a for a in agents if agent_matches(a, self.filter_text)]
+
+    def _render_filter_count(self, matched: int, total: int) -> None:
+        text = Text(no_wrap=True)
+        if self.filter_text.strip():
+            text.append(f"filter: {self.filter_text.strip()}", style=MUTED)
+            text.append(" · ", style=DIM)
+            text.append(f"{matched}/{total}", style=MUTED)
+        else:
+            text.append(f"{total} agents", style=DIM)
+            text.append(" · ", style=DIM)
+            text.append("enter apply · esc clear", style=DIM)
+        self.query_one("#filter-count", Static).update(text)
+
     def _refresh_view(self, now: datetime | None = None) -> None:
         """Push the selected session's agents, list and totals into the widgets."""
         if not self._ready:
             return
         now = now or _now()
-        agents = self._session_agents()
+        all_agents = self._session_agents()
+        agents = self._visible_agents(all_agents)
+        self._render_filter_count(len(agents), len(all_agents))
         parents: dict[str, str] = {}
         for agent in agents:
             if (
@@ -233,7 +283,7 @@ class DashboardScreen(Screen):
                     parents[agent.key] = parent.title or parent.key
         self.query_one(CardGrid).set_agents(agents, parents)
         self.query_one(AgentList).set_agents(agents, default_key=self.selected_agent_key)
-        starts = [a.started for a in agents if a.started is not None]
+        starts = [a.started for a in all_agents if a.started is not None]
         elapsed = (now - min(starts)).total_seconds() if starts else None
         totals = self.store.totals(self.selected_key or "")
         self.query_one(TotalsBar).update_totals(totals, elapsed)
@@ -342,6 +392,35 @@ class DashboardScreen(Screen):
         if self.selected_agent_key in cards:
             return self.selected_agent_key
         return next(iter(cards), None)
+
+    # ----- filter -----
+
+    def action_open_filter(self) -> None:
+        self.add_class("-filtering")
+        self.query_one("#filter-input", Input).focus()
+
+    def on_input_changed(self, message: Input.Changed) -> None:
+        if message.input.id != "filter-input":
+            return
+        message.stop()
+        self.filter_text = message.value
+        self._refresh_view()
+
+    def on_input_submitted(self, message: Input.Submitted) -> None:
+        """Enter keeps the filter but returns focus to the cards."""
+        if message.input.id != "filter-input":
+            return
+        message.stop()
+        self.set_focus(None)
+
+    def action_escape(self) -> None:
+        """Clear the filter and close the bar."""
+        if self.has_class("-filtering"):
+            self.remove_class("-filtering")
+            self.filter_text = ""
+            self.query_one("#filter-input", Input).value = ""
+            self.set_focus(None)
+            self._refresh_view()
 
     # ----- actions -----
 

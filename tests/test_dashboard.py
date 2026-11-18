@@ -301,3 +301,111 @@ async def test_tab_click_selects_tab_without_underline() -> None:
         assert screen.selected_key == screen.tab_keys[1]
         line = tabs.render_lines(Region(0, 0, 140, 1))[0]
         assert not any(seg.style and seg.style.underline for seg in line)
+
+
+def build_filter_store() -> Store:
+    store = Store()
+    store.upsert_session("s1", name="proj")
+    store.upsert_session("s2", name="other")
+    store.apply([
+        ev("s1", "a1", EventKind.START, 0, title="Builder", model="claude-sonnet-4-5"),
+        ev("s1", "a2", EventKind.START, 1, title="Reviewer", model="claude-opus-4-5"),
+        ev("s1", "a2", EventKind.END, 5, status=Status.DONE),
+        ev("s1", "agy:z", EventKind.START, 2, title="Gemini job", model="gemini-4-flash"),
+        ev("s1", "a3", EventKind.START, 3, title="Builder two", model="claude-sonnet-4-5"),
+        ev("s1", "a3", EventKind.END, 6, status=Status.FAILED),
+        ev("s2", "b1", EventKind.START, 4, title="Builder other", model="claude-sonnet-4-5"),
+    ])
+    return store
+
+
+async def test_filter_matches_title_source_status_model_and_ands_terms() -> None:
+    app = Host(build_filter_store())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        grid = screen.query_one(CardGrid)
+        await pilot.press("slash")
+        assert screen.has_class("-filtering")
+        for text, expected in [
+            ("BUILDER", {"a1", "a3"}),
+            ("agy", {"agy:z"}),
+            ("done", {"a2"}),
+            ("failed", {"a3"}),
+            ("opus", {"a2"}),
+            ("builder failed", {"a3"}),
+            ("builder opus", set()),
+        ]:
+            screen.query_one("#filter-input").value = text
+            await pilot.pause()
+            assert set(grid.cards) == expected, text
+            assert set(screen.query_one(AgentList)._keys) == expected, text
+        screen.query_one("#filter-input").value = "builder"
+        await pilot.pause()
+        count = screen.query_one("#filter-count").render().plain
+        assert count == "filter: builder · 2/4"
+        # totals still reflect the whole tab
+        assert "agents 1/4 done" in screen.query_one(TotalsBar).render().plain
+
+
+async def test_filter_main_agent_only_if_matches() -> None:
+    store = build_filter_store()
+    store.apply([ev("s1", main_agent_key("s1"), EventKind.START, 0, title="proj", model="claude-opus-4-5")])
+    app = Host(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        grid = app.screen.query_one(CardGrid)
+        assert main_agent_key("s1") in grid.cards
+        await pilot.press("slash")
+        app.screen.query_one("#filter-input").value = "builder"
+        await pilot.pause()
+        assert main_agent_key("s1") not in grid.cards
+        app.screen.query_one("#filter-input").value = "main"
+        await pilot.pause()
+        assert set(grid.cards) == {main_agent_key("s1")}
+
+
+async def test_filter_escape_clears_and_closes() -> None:
+    app = Host(build_filter_store())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        grid = screen.query_one(CardGrid)
+        await pilot.press("slash", "a", "g", "y")
+        await pilot.pause()
+        assert set(grid.cards) == {"agy:z"}
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not screen.has_class("-filtering")
+        assert screen.filter_text == ""
+        assert set(grid.cards) == {"a1", "a2", "agy:z", "a3"}
+
+
+async def test_filter_survives_enter_polls_and_tab_switch() -> None:
+    store = build_filter_store()
+    app = Host(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        grid = screen.query_one(CardGrid)
+        await pilot.press("slash", "b", "u", "i", "l", "d", "enter")
+        await pilot.pause()
+        assert screen.has_class("-filtering")
+        assert set(grid.cards) == {"a1", "a3"}
+        # live poll adds a matching and a non-matching agent
+        changed = store.apply([
+            ev("s1", "a4", EventKind.START, 20, title="Builder three", model="claude-sonnet-4-5"),
+            ev("s1", "a5", EventKind.START, 21, title="Other", model="claude-sonnet-4-5"),
+        ])
+        screen.refresh_sessions(changed)
+        await pilot.pause()
+        assert set(grid.cards) == {"a1", "a3", "a4"}
+        assert screen.query_one("#filter-count").render().plain == "filter: build · 3/6"
+        # global filter: applies to the other tab too
+        await pilot.press("2")
+        await pilot.pause()
+        assert screen.filter_text == "build"
+        assert set(grid.cards) == {"b1"}
+        await pilot.press("1")
+        await pilot.pause()
+        assert set(grid.cards) == {"a1", "a3", "a4"}
