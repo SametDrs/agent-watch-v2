@@ -77,25 +77,25 @@ def test_render_event_kinds() -> None:
 
     c.print(render_event(ev(EventKind.PROMPT, body="run [all] checks")))
     prompt_out = c.export_text()
-    assert "▶ to agent" in prompt_out
+    assert "▌ you" in prompt_out
     assert "run [all] checks" in prompt_out
 
     c.print(render_event(ev(EventKind.TEXT, body="Result is **ok**", model="claude-sonnet-5-5")))
     text_out = c.export_text()
-    assert "◀ agent" in text_out
+    assert "assistant" in text_out
     assert "Result is ok" in text_out
     assert "**ok**" not in text_out
 
     c.print(render_event(ev(EventKind.THINKING, body="weighing options")))
     think_out = c.export_text()
-    assert "… thinking" in think_out
+    assert "◌ thinking" in think_out
     assert "weighing options" in think_out
 
     long_args = "A" * 500 + "Z" * 120
     c.print(render_event(ev(EventKind.TOOL_START, tool="Bash", summary="Bash pytest", body=long_args)))
     tstart_out = c.export_text().replace("\n", "")
-    assert "⚙ Bash pytest" in tstart_out
-    assert "A" * 500 in tstart_out
+    assert "▸ Bash pytest" in tstart_out
+    assert tstart_out.count("A") == 500
     assert "Z" not in tstart_out
 
     long_res = "B" * 800 + "Q" * 120
@@ -144,6 +144,40 @@ def test_empty_thinking_marker() -> None:
     c = Console(record=True, width=80)
     c.print(render_event(ev(EventKind.THINKING, body="")))
     assert "text not stored" in c.export_text()
+
+
+def test_tool_call_json_args_formatting() -> None:
+    c = Console(record=True, width=100, force_terminal=True, color_system="truecolor")
+    args = {"file_path": "src/app.py", "content": "line1\nline2\nline3\nline4\nline5"}
+    c.print(render_event(ev(EventKind.TOOL_START, tool="Write", summary="Write src/app.py", body=json.dumps(args))))
+    out = c.export_text()
+    assert "▸ Write src/app.py" in out
+    assert "╭" in out and "╰" in out
+    assert "file_path" in out and "src/app.py" in out
+    assert "line1" in out and "line4" in out
+    assert "line5" not in out
+    assert "…" in out
+    assert "\\n" not in out
+
+    c2 = Console(record=True, width=100, force_terminal=True, color_system="truecolor")
+    c2.print(render_event(ev(EventKind.TOOL_START, tool="Bash", summary="Bash run", body=json.dumps({"command": "K" * 260}))))
+    out2 = c2.export_text()
+    assert "▸ Bash run" in out2
+    assert out2.replace("\n", "").count("K") == 199
+    assert "…" in out2
+
+    c3 = Console(record=True, width=100, force_terminal=True, color_system="truecolor")
+    trunc = '{"file_path": "a.py", "content": "alpha\\nbeta\\ngamma\\n…'
+    c3.print(render_event(ev(EventKind.TOOL_START, tool="Edit", summary="Edit a.py", body=trunc)))
+    out3 = c3.export_text()
+    assert "alpha" in out3 and "beta" in out3 and "gamma" in out3
+    assert "\\n" not in out3
+
+    c4 = Console(record=True, width=100)
+    c4.print(render_event(ev(EventKind.TOOL_START, tool="Status", summary="Status", body="{}")))
+    out4 = c4.export_text()
+    assert "▸ Status" in out4
+    assert "╭" not in out4
 
 
 async def test_header_shows_card_fields_and_full_tokens() -> None:
