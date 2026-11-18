@@ -7,16 +7,10 @@ from datetime import datetime, timedelta, timezone
 import re
 import shlex
 from typing import Any
-from urllib.parse import unquote
 
 from agent_watch import config
 from agent_watch.model import STANDALONE_SESSION_KEY, ShellCall, effort_from_model
 from agent_watch.sources.codex import CodexConv
-
-SESSION_PATH_RE = re.compile(
-    r"(?:^|[\\/])temp[\\/]claude[\\/][^\\/]+[\\/]([0-9a-f-]{36})(?=[\\/]|$)",
-    re.IGNORECASE,
-)
 
 _AGY_TOKEN_RE = re.compile(r"(?<![\w-])agy(?:\.exe)?(?![\w-])", re.IGNORECASE)
 _AGY_PROMPT_FLAG_RE = re.compile(
@@ -76,8 +70,6 @@ class AgyConv:
     conv_id: str
     first_input_ts: datetime | None
     first_input_text: str
-    workspace_paths: list[str] = field(default_factory=list)
-    cwd: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,7 +90,6 @@ class _ParsedCall:
     call: ShellCall
     is_agy: bool
     prompt: str
-    add_dirs: frozenset[str]
     conversation_id: str | None
     effort: str
     ts_start: datetime
@@ -114,19 +105,6 @@ class _ScoreEdge:
     text_matched: bool
     call: ShellCall
     effort: str = ""
-
-
-def normalize_path(p: str) -> str:
-    """URL-decode, strip file:///, unify slashes to '/', lowercase, strip trailing '/'."""
-    if not p:
-        return ""
-    s = unquote(p.strip()).replace("\\", "/")
-    if s.lower().startswith("file:///"):
-        s = s[8:]
-    s = s.lower()
-    if s != "/":
-        s = s.rstrip("/")
-    return s
 
 
 def _unquote(val: str) -> str:
@@ -369,18 +347,6 @@ def _texts_match(conv_text: str, prompt_text: str) -> bool:
     )
 
 
-def _extract_session_uuid(conv: AgyConv) -> str | None:
-    candidates = [p for p in (conv.workspace_paths or ()) if p]
-    if conv.cwd:
-        candidates.append(conv.cwd)
-    for raw_path in candidates:
-        for probe in (raw_path, normalize_path(raw_path)):
-            match = SESSION_PATH_RE.search(probe)
-            if match:
-                return match.group(1).lower()
-    return None
-
-
 def _build_score_edges(
     convs: list[AgyConv],
     agy_calls: list[_ParsedCall],
@@ -393,14 +359,11 @@ def _build_score_edges(
         in_window = [c for c in agy_calls if c.win_start <= ts <= c.win_end]
         if not in_window:
             continue
-        conv_ws = {normalize_path(p) for p in (conv.workspace_paths or ()) if p}
         for c in in_window:
             text_matched = _texts_match(conv.first_input_text, c.prompt)
-            dir_matched = bool(conv_ws and c.add_dirs and (conv_ws & c.add_dirs))
             delta_sec = abs((ts - c.ts_start).total_seconds())
             score = (
                 (100.0 if text_matched else 0.0)
-                + (20.0 if dir_matched else 0.0)
                 - delta_sec
             )
             if text_matched:
@@ -457,16 +420,12 @@ def _precompute_calls(calls: list[ShellCall]) -> list[_ParsedCall]:
             if call.ts_end is not None
             else ts_start + timedelta(hours=1)
         )
-        add_dirs = frozenset(
-            norm for d in parsed["add_dirs"] if d and (norm := normalize_path(d))
-        )
         parsed_calls.append(
             _ParsedCall(
                 idx=idx,
                 call=call,
                 is_agy=is_agy_command(call.command),
                 prompt=parsed["prompt"],
-                add_dirs=add_dirs,
                 conversation_id=parsed["conversation_id"],
                 effort=effort_from_model(parsed["model"] or ""),
                 ts_start=ts_start,
@@ -501,38 +460,9 @@ def link(
     agy_calls = [c for c in parsed_calls if c.is_agy]
     used_call_indices: set[int] = set()
 
-    # Rule 1: path match via SESSION_PATH_RE.
-    path_groups: dict[str, list[AgyConv]] = {}
-    after_path: list[AgyConv] = []
-    for conv in pending:
-        session_uuid = _extract_session_uuid(conv)
-        if session_uuid is not None:
-            path_groups.setdefault(session_uuid, []).append(conv)
-        else:
-            after_path.append(conv)
-
-    for session_uuid, group_convs in path_groups.items():
-        session_agy_calls = [
-            c for c in agy_calls if c.call.session_id.lower() == session_uuid
-        ]
-        matched = _assign_by_score(group_convs, session_agy_calls, used_call_indices)
-        resolved_session_key = (
-            session_agy_calls[0].call.session_id if session_agy_calls else session_uuid
-        )
-        for conv in group_convs:
-            match_info = matched.get(conv.conv_id)
-            parent_agent = match_info[0].agent_key if match_info is not None else None
-            effort = match_info[2] if match_info is not None else ""
-            links[conv.conv_id] = Link(
-                session_key=resolved_session_key,
-                parent_agent_key=parent_agent,
-                method="path",
-                effort=effort,
-            )
-
-    # Rule 2: conversation_id match via --conversation flag.
+    # Rule 1: conversation_id match via --conversation flag.
     after_conv_id: list[AgyConv] = []
-    for conv in after_path:
+    for conv in pending:
         if not conv.conv_id:
             after_conv_id.append(conv)
             continue
@@ -565,7 +495,7 @@ def link(
         else:
             after_conv_id.append(conv)
 
-    # Rule 3: score-based matching.
+    # Rule 2: score-based matching.
     scored = _assign_by_score(after_conv_id, agy_calls, used_call_indices)
     for conv in after_conv_id:
         match_info = scored.get(conv.conv_id)
@@ -579,7 +509,7 @@ def link(
                 effort=effort,
             )
         else:
-            # Rule 4: standalone fallback.
+            # Rule 3: standalone fallback.
             links[conv.conv_id] = Link(
                 session_key=STANDALONE_SESSION_KEY,
                 parent_agent_key=None,

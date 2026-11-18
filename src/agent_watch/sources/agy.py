@@ -266,7 +266,6 @@ class AgyConvInfo:
     conv_id: str
     first_input_ts: datetime | None = None
     first_input_text: str = ""
-    workspace_paths: list[str] = field(default_factory=list)
     title: str = ""
     last_mtime: float = 0.0
     last_type: str = ""
@@ -320,7 +319,6 @@ def _extract_explicit_prompt(cmdline: list[str]) -> str:
 def _proc_matches_conv(
     proc: Any,
     info: AgyConvInfo,
-    latest_in_workspace: dict[str, str],
 ) -> bool:
     """Return True if a live agy process matches the given conversation."""
     raw_cmdline = getattr(proc, "cmdline", None)
@@ -358,10 +356,6 @@ def _proc_matches_conv(
         norm_cwd = _norm_path(cwd)
         if len(norm_cwd) > 3 and prompt_norm and norm_cwd in _norm_path(info.first_input_text):
             return True
-        if any(_norm_path(wp) == norm_cwd for wp in info.workspace_paths):
-            winner = latest_in_workspace.get(norm_cwd)
-            if winner is None or winner == info.conv_id:
-                return True
 
     return False
 
@@ -501,20 +495,11 @@ class AgyScanner:
             info.title = self._transcript_titles.get(conv_id, "")
             in_window.append(info)
 
-        latest_in_workspace: dict[str, str] = {}
-        latest_mtime: dict[str, float] = {}
-        for info in in_window:
-            for wp in info.workspace_paths:
-                nw = _norm_path(wp)
-                if nw and info.last_mtime >= latest_mtime.get(nw, -1.0):
-                    latest_mtime[nw] = info.last_mtime
-                    latest_in_workspace[nw] = info.conv_id
-
         procs_list = self._get_processes()
 
         for info in in_window:
             matched_proc = any(
-                _proc_matches_conv(proc, info, latest_in_workspace) for proc in procs_list
+                _proc_matches_conv(proc, info) for proc in procs_list
             )
             age_seconds = ref_mtime - info.last_mtime
             if matched_proc or age_seconds < _RUNNING_MTIME_SECONDS:

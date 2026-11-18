@@ -94,7 +94,7 @@ def test_render_event_kinds() -> None:
     long_args = "A" * 500 + "Z" * 120
     c.print(render_event(ev(EventKind.TOOL_START, tool="Bash", summary="Bash pytest", body=long_args)))
     tstart_out = c.export_text().replace("\n", "")
-    assert "▸ Bash pytest" in tstart_out
+    assert "▾ Bash pytest" in tstart_out
     assert tstart_out.count("A") == 500
     assert "Z" not in tstart_out
 
@@ -102,7 +102,7 @@ def test_render_event_kinds() -> None:
     c.print(render_event(ev(EventKind.TOOL_END, tool="Bash", body=long_res)))
     tend_out = c.export_text().replace("\n", "")
     assert "↳ result" in tend_out
-    assert "B" * 800 in tend_out
+    assert tend_out.count("B") == 801  # 800 clipped body chars + the B of the Bash header
     assert "Q" not in tend_out
 
     err_renderable = render_event(ev(EventKind.ERROR, summary="crashed", body="traceback"))
@@ -151,7 +151,7 @@ def test_tool_call_json_args_formatting() -> None:
     args = {"file_path": "src/app.py", "content": "line1\nline2\nline3\nline4\nline5"}
     c.print(render_event(ev(EventKind.TOOL_START, tool="Write", summary="Write src/app.py", body=json.dumps(args))))
     out = c.export_text()
-    assert "▸ Write src/app.py" in out
+    assert "▾ Write src/app.py" in out
     assert "╭" in out and "╰" in out
     assert "file_path" in out and "src/app.py" in out
     assert "line1" in out and "line4" in out
@@ -162,7 +162,7 @@ def test_tool_call_json_args_formatting() -> None:
     c2 = Console(record=True, width=100, force_terminal=True, color_system="truecolor")
     c2.print(render_event(ev(EventKind.TOOL_START, tool="Bash", summary="Bash run", body=json.dumps({"command": "K" * 260}))))
     out2 = c2.export_text()
-    assert "▸ Bash run" in out2
+    assert "▾ Bash run" in out2
     assert out2.replace("\n", "").count("K") == 199
     assert "…" in out2
 
@@ -176,7 +176,7 @@ def test_tool_call_json_args_formatting() -> None:
     c4 = Console(record=True, width=100)
     c4.print(render_event(ev(EventKind.TOOL_START, tool="Status", summary="Status", body="{}")))
     out4 = c4.export_text()
-    assert "▸ Status" in out4
+    assert "▾ Status" in out4
     assert "╭" not in out4
 
 
@@ -606,3 +606,240 @@ def test_snapshot(snap_compare, tmp_path: Path) -> None:
         )
 
     assert snap_compare(app, press=["enter"], run_before=_wait_for_poll)
+
+
+# ---- collapsible tool blocks ----
+
+
+def _tool_pair(i: int, *, out: str = "ok", failed: bool = False, tool: str = "Bash") -> list[Event]:
+    return [
+        ev(
+            EventKind.TOOL_START,
+            2 * i,
+            tool=tool,
+            summary=f"{tool} cmd-{i}",
+            body=json.dumps({"command": f"cmd-{i}", "note": f"args-marker-{i}"}),
+        ),
+        ev(
+            EventKind.TOOL_END,
+            2 * i + 1,
+            tool=tool,
+            summary=f"error: {tool}" if failed else "",
+            body=out,
+            status=Status.FAILED if failed else None,
+        ),
+    ]
+
+
+def _line_texts(log: TranscriptLog) -> list[str]:
+    return ["".join(seg.text for seg in line) for line in log.lines]
+
+
+async def test_tool_blocks_collapsed_by_default() -> None:
+    store = Store()
+    store.apply(_tool_pair(0, out="first line\nsecond line\nthird line"))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert "▸ Bash cmd-0" in text
+        assert "↳ first line" in text
+        assert "second line" not in text
+        assert "args-marker-0" not in text
+        assert "╭" not in text
+        assert "▾" not in text
+        log = app.screen.query_one(TranscriptLog)
+        assert log.selected_key is None
+
+
+async def test_toggle_selected_tool_block() -> None:
+    store = Store()
+    store.apply(_tool_pair(0, out="first line\nsecond line") + _tool_pair(1, out="other out"))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        await pilot.press("j")
+        await pilot.pause()
+        assert log.selected_key == 0
+        # Selection is visible as an accent bar on the block's lines only.
+        lines = _line_texts(log)
+        assert lines[0].startswith("▌ ▸ Bash cmd-0")
+        assert not any(t.startswith("▌ ▸ Bash cmd-1") for t in lines)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert "▾ Bash cmd-0" in text
+        assert "args-marker-0" in text and "second line" in text
+        assert "args-marker-1" not in text  # the other block stays collapsed
+        assert "▸ Bash cmd-1" in text
+
+        await pilot.press("space")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert "▸ Bash cmd-0" in text
+        assert "args-marker-0" not in text and "second line" not in text
+
+        # j/k and arrows move the selection among tool blocks, clamped at the ends.
+        await pilot.press("down")
+        assert log.selected_key == 2
+        await pilot.press("j")
+        assert log.selected_key == 2
+        await pilot.press("k")
+        assert log.selected_key == 0
+        await pilot.press("up")
+        assert log.selected_key == 0
+
+
+async def test_expand_all_and_collapse_all() -> None:
+    store = Store()
+    store.apply([ev(EventKind.TEXT, 0, body="intro")] + _tool_pair(1) + _tool_pair(2))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert text.count("▾ Bash") == 2 and "▸ Bash" not in text
+        assert "args-marker-1" in text and "args-marker-2" in text
+        assert "intro" in text
+
+        await pilot.press("c")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert text.count("▸ Bash") == 2 and "▾" not in text
+        assert "args-marker" not in text
+
+
+async def test_expand_state_survives_poll_and_result_pairs_in_place() -> None:
+    store = Store()
+    # A call whose result has not arrived yet, followed by a finished call.
+    store.apply([_tool_pair(0)[0]] + _tool_pair(1))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log = screen.query_one(TranscriptLog)
+        assert "↳ …" in _log_text(screen)
+        await pilot.press("j")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "▾ Bash cmd-0" in _log_text(screen)
+
+        # The late result for call 0 pairs with it; new calls append; state is kept.
+        store.apply([_tool_pair(0, out="late result")[1]] + _tool_pair(2, out="newest"))
+        screen.refresh_events()
+        await pilot.pause()
+        text = _log_text(screen)
+        assert "▾ Bash cmd-0" in text and "late result" in text
+        assert "args-marker-0" in text
+        assert "▸ Bash cmd-1" in text and "▸ Bash cmd-2" in text
+        assert "↳ newest" in text
+        assert log.selected_key == 0
+        assert _line_texts(log)[0].startswith("▌ ▾")
+
+        # A poll with nothing new leaves everything untouched.
+        screen.refresh_events()
+        await pilot.pause()
+        assert _log_text(screen) == text
+
+
+async def test_error_result_preview_uses_failed_color() -> None:
+    store = Store()
+    store.apply(_tool_pair(0, out="boom: it broke\ntrace", failed=True))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        text = _log_text(app.screen)
+        assert "↳ error: Bash · boom: it broke" in text
+        assert "trace" not in text
+        red = STATUS_COLORS[Status.FAILED].lower()
+        preview = next(
+            line for line in log.lines if "boom: it broke" in "".join(s.text for s in line)
+        )
+        seg = next(s for s in preview if "boom" in s.text)
+        assert seg.style is not None and seg.style.color is not None
+        assert seg.style.color.get_truecolor().hex.lower() == red
+
+
+async def test_toggle_does_not_rerender_other_blocks() -> None:
+    store = Store()
+    store.apply(
+        [ev(EventKind.TEXT, 0, body="intro text")]
+        + _tool_pair(1)
+        + [ev(EventKind.TEXT, 9, body="outro text")]
+    )
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        head, tail = log.lines[0], log.lines[-1]
+        total = len(log.lines)
+        await pilot.press("j")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(log.lines) > total
+        assert log.lines[0] is head and log.lines[-1] is tail
+        assert log.virtual_size.height == len(log.lines)
+
+
+async def test_follow_mode_with_tool_blocks() -> None:
+    store = Store()
+    store.apply([e for i in range(30) for e in _tool_pair(i)])
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log = screen.query_one(TranscriptLog)
+        assert log.max_scroll_y > 10
+        assert log.scroll_y == log.max_scroll_y and log.following
+
+        store.apply([e for i in range(30, 34) for e in _tool_pair(i)])
+        screen.refresh_events()
+        await pilot.pause()
+        assert log.scroll_y == log.max_scroll_y and log.following
+        assert "cmd-33" in _log_text(screen)
+
+        # Expanding everything while following keeps the tail in view.
+        await pilot.press("e")
+        await pilot.pause()
+        assert log.following and log.scroll_y == log.max_scroll_y
+        store.apply(_tool_pair(34))
+        screen.refresh_events()
+        await pilot.pause()
+        assert log.scroll_y == log.max_scroll_y
+        assert "cmd-34" in _log_text(screen)
+
+        # Scrolled up: new events do not yank the view, and toggling keeps it in place.
+        await pilot.press("c")
+        await pilot.press("home")
+        await pilot.wait_for_scheduled_animations()
+        await pilot.pause()
+        assert not log.following and log.scroll_y == 0
+        store.apply(_tool_pair(35))
+        screen.refresh_events()
+        await pilot.pause()
+        assert log.scroll_y == 0 and not log.following
+        await pilot.press("j")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert log.scroll_y == 0 and "args-marker-0" in _log_text(screen)
+
+
+async def test_many_events_append_without_rebuilding_blocks() -> None:
+    store = Store()
+    store.apply([e for i in range(300) for e in _tool_pair(i)])
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        log = screen.query_one(TranscriptLog)
+        assert len(log.tool_blocks()) == 300
+        before = list(log.lines)
+        store.apply(_tool_pair(300))
+        screen.refresh_events()
+        await pilot.pause()
+        assert len(log.lines) == len(before) + 2
+        assert all(a is b for a, b in zip(before, log.lines))
