@@ -5,11 +5,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from textual.app import App
+from textual.color import Color
+from textual.geometry import Region
+from textual.widgets import Static
 
-from agent_watch.model import STANDALONE_SESSION_KEY, UNLINKED_SESSION_KEY, Event, EventKind, main_agent_key
+from agent_watch.model import STANDALONE_SESSION_KEY, UNLINKED_SESSION_KEY, Event, EventKind, Status, main_agent_key
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.store import Store
-from agent_watch.ui.dashboard import EMPTY_TEXT, DashboardScreen
+from agent_watch.ui.dashboard import EMPTY_TEXT, DashboardScreen, TabBar
+from agent_watch.ui.theme import ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT
 from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, QuotaPanel, TotalsBar
 
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -59,7 +63,7 @@ async def test_tabs_cards_and_parent_label() -> None:
         assert set(grid.cards) == {"a1", "agy:x"}
         assert "← Builder" in grid.cards["agy:x"].render_agent(None).plain
         assert "←" not in grid.cards["a1"].render_agent(None).plain
-        assert "agents [0/2 done]" in screen.query_one(TotalsBar).render().plain
+        assert "agents 0/2 done" in screen.query_one(TotalsBar).render().plain
 
 
 async def test_switch_tabs() -> None:
@@ -180,7 +184,7 @@ async def test_unlinked_group_name_and_no_main_parent_label() -> None:
         assert next(iter(grid.cards)) == main_key
         assert [c.agent.key for c in grid.query(AgentCard)][0] == main_key
         assert "←" not in grid.cards["codex:r1"].render_agent(None).plain
-        assert "main" in grid.cards[main_key].render_agent(None).plain
+        assert "main" in str(grid.cards[main_key].border_title)
 
 
 async def test_main_card_first() -> None:
@@ -247,3 +251,53 @@ async def test_agent_list_default_highlight_and_fallback() -> None:
 
         agent_list.set_agents([])
         assert agent_list.highlighted is None
+
+
+async def test_header_pill_tabs_and_layout_styles() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, DashboardScreen)
+
+        header = screen.query_one("#header", Static).content
+        assert header.plain.startswith("◆ agent watch · ")
+        assert header.plain.endswith(" · ● live")
+        header_styles = [str(span.style) for span in header.spans]
+        assert ACCENT in header_styles
+        assert f"bold {TEXT}" in header_styles
+        assert STATUS_COLORS[Status.DONE] in header_styles
+        assert MUTED in header_styles
+
+        tabs = screen.query_one(TabBar).content
+        assert tabs.plain == " 1 proj (0/2)    2 Unlinked (0/1) "
+        tab_styles = [str(span.style) for span in tabs.spans]
+        assert not any("underline" in style for style in tab_styles)
+        assert f"bold {ACCENT} on {SURFACE_HI}" in tab_styles
+        assert f"bold {TEXT} on {SURFACE_HI}" in tab_styles
+        assert DIM in tab_styles
+        assert MUTED in tab_styles
+
+        assert screen.styles.background.hex.lower() == BG
+        assert screen.query_one("#sidebar").styles.background.hex.lower() == SURFACE
+        assert screen.query_one("#sidebar").styles.border_right == ("solid", Color.parse(BORDER))
+        assert screen.query_one("#grid").styles.background.hex.lower() == BG
+        assert screen.query_one("#events").styles.background.hex.lower() == BG
+        assert screen.query_one("#events").styles.border_top == ("solid", Color.parse(BORDER))
+
+
+async def test_tab_click_selects_tab_without_underline() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, DashboardScreen)
+        tabs = screen.query_one(TabBar)
+        assert not any("underline" in str(span.style) for span in tabs.content.spans)
+        assert len(tabs.ranges) == len(screen.tab_keys) >= 2
+        start, end = tabs.ranges[1]
+        await pilot.click(TabBar, offset=(start + 2, 0))
+        await pilot.pause()
+        assert screen.selected_key == screen.tab_keys[1]
+        line = tabs.render_lines(Region(0, 0, 140, 1))[0]
+        assert not any(seg.style and seg.style.underline for seg in line)

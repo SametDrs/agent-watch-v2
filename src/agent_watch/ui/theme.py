@@ -6,18 +6,24 @@ import re
 
 from agent_watch.model import Source, Status, effort_from_model
 
-ACCENT = "#f0883e"
+BG = "#0f1117"
+SURFACE = "#161b26"
+SURFACE_HI = "#1f2533"
+BORDER = "#2a3142"
+TEXT = "#e6e9ef"
+MUTED = "#9aa3b5"
+ACCENT = "#8aa4ff"
 SOURCE_COLORS: dict[Source, str] = {
-    Source.CLAUDE: "#d97757",
-    Source.AGY: "#6ea8fe",
-    Source.CODEX: "#3d7bf0",
+    Source.CLAUDE: "#e08a6a",
+    Source.AGY: "#7fb2ff",
+    Source.CODEX: "#a99bff",
 }
 STATUS_COLORS: dict[Status, str] = {
-    Status.RUNNING: ACCENT,
-    Status.DONE: "#3fb950",
-    Status.FAILED: "#f85149",
-    Status.PENDING: "#6e7681",
-    Status.STALE: "#6e7681",
+    Status.RUNNING: "#f2b866",
+    Status.DONE: "#7fd1a0",
+    Status.FAILED: "#ff7a8a",
+    Status.PENDING: "#5c6478",
+    Status.STALE: "#5c6478",
 }
 STATUS_ICONS: dict[Status, str] = {
     Status.RUNNING: "●",
@@ -26,7 +32,7 @@ STATUS_ICONS: dict[Status, str] = {
     Status.PENDING: "○",
     Status.STALE: "?",
 }
-DIM = "#8b949e"
+DIM = "#6b7489"
 
 
 def fmt_duration(seconds: float | None) -> str:

@@ -102,9 +102,12 @@ def test_card_lines():
     rendered = AgentCard(agent).render_agent(T0 + timedelta(seconds=95))
     t = rendered.plain
     assert len(t.splitlines()) == 5
-    assert "opus" in t and "low" in t and "tok" in t and "out)" in t
+    assert "opus" in t and "low" in t and "tok" in t and "out" in t
     assert "claude · opus 5.5 · low" in t
-    assert "1:35 · 52k tok (7k out)" in t
+    assert "52k tok · 7k out" in t
+    card = AgentCard(agent)
+    card._update_borders(T0 + timedelta(seconds=95))
+    assert "1:35" in str(card.border_subtitle)
     assert "● Bash Run auth tests" in t
 
 
@@ -148,9 +151,10 @@ async def test_card_content():
         card.update_agent(make_agent(), now=T0 + timedelta(seconds=310))
         await pilot.pause()
         out = text_of(card)
-        assert "Agent a1" in out and "← Parent" in out
+        assert "Agent a1" in str(card.border_title) and "← Parent" in out
         assert "claude · sonnet 5.5" in out
-        assert "5:10 · 82k tok (2k out)" in out
+        assert "5:10" in str(card.border_subtitle) and "running" in str(card.border_subtitle)
+        assert "82k tok · 2k out" in out
         assert "● Bash Run auth tests" in out
         assert card.has_class("-running")
 
@@ -161,17 +165,17 @@ async def test_card_content():
 
         card.update_agent(make_agent(status=Status.DONE, ended=T0 + timedelta(seconds=282)))
         assert card.has_class("-done") and not card.has_class("-running")
-        assert "4:42 · 82k tok (2k out)" in text_of(card)
-        assert "✓" in text_of(card)
+        assert "4:42" in str(card.border_subtitle)
+        assert "✓" in text_of(card) and "✓" in str(card.border_subtitle)
 
         card.update_agent(make_agent(status=Status.FAILED))
-        assert "✗" in text_of(card)
+        assert "✗" in text_of(card) and "✗" in str(card.border_subtitle)
 
 
 def test_card_sources_and_main_title():
     main = make_agent(key=main_agent_key("s"), title="", is_main=True, effort="")
     main_text = AgentCard(main).render_agent(T0).plain
-    assert "main" in main_text.splitlines()[0]
+    assert "main" in str(AgentCard(main).border_title)
     assert "claude · sonnet 5.5" in main_text
     assert "claude · sonnet 5.5 ·" not in main_text
 
@@ -333,7 +337,7 @@ async def test_totals_bar():
         bar = app.query_one("#totals", TotalsBar)
         bar.update_totals({"agents_done": 5, "agents_total": 6, "running": 1, "calls": 147, "out_tokens": 53_000}, 580)
         await pilot.pause()
-        assert text_of(bar) == "agents [5/6 done]  running [1]  calls [147]  out [53k]  time [9:40]"
+        assert text_of(bar) == "agents 5/6 done · running 1 · calls 147 · out 53k · time 9:40"
 
 
 async def test_quota_panel():

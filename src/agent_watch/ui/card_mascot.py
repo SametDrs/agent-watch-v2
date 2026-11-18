@@ -122,7 +122,7 @@ def sprite(source: Source, state: str, tick: int) -> list[str]:
     return builder(state, tick)
 
 
-def compose(rows: list[str], state: str, tick: int) -> list[str]:
+def compose(rows: list[str], state: str, tick: int, sparkles: bool = True) -> list[str]:
     """Place a sprite on the 14x10 canvas and apply state-wide effects."""
     h, w = len(rows), len(rows[0])
     dx = (CANVAS_W - w) // 2
@@ -145,13 +145,13 @@ def compose(rows: list[str], state: str, tick: int) -> list[str]:
     if state == "error" and tick % 20 < 6 and tick % 2 == 0:  # red flash
         keep = set("ksrcw")
         canvas = [[c if c in keep or c == "." else "r" for c in row] for row in canvas]
-    if state == "done":  # sparkles
-        sparkles = (
+    if state == "done" and sparkles:  # sparkles
+        spots = (
             ((0, 1), tick % 6 < 3),
             ((CANVAS_W - 1, 0), tick % 6 >= 3),
             ((CANVAS_W - 2, 4), tick % 8 < 2),
         )
-        for (x, y), on in sparkles:
+        for (x, y), on in spots:
             if on and canvas[y][x] == ".":
                 canvas[y][x] = "y"
     if state == "idle" and tick % 40 >= 30:  # sleepy "z"

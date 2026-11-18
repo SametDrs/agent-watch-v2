@@ -9,17 +9,18 @@ from typing import Any
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual import events
 from textual.containers import Horizontal
 from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import Footer, Static
 
 from agent_watch.config import model_color
-from agent_watch.model import UNLINKED_SESSION_KEY, Agent, Event, Session, main_agent_key
+from agent_watch.model import UNLINKED_SESSION_KEY, Agent, Event, Session, Status, main_agent_key
 from agent_watch.poller import UNLINKED_NAME
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.store import Store
-from agent_watch.ui.theme import ACCENT, DIM
+from agent_watch.ui.theme import ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT
 from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, QuotaPanel, TotalsBar
 
 EMPTY_TEXT = "Henüz ajan yok — Claude, agy ya da Codex çalıştırınca burada görünecek."
@@ -34,7 +35,26 @@ def _now() -> datetime:
 class TabBar(Static):
     """Single-line clickable session tab strip."""
 
-    DEFAULT_CSS = "TabBar { height: 1; padding: 0 1; }"
+    DEFAULT_CSS = f"""
+    TabBar {{
+        height: 1;
+        padding: 0 1;
+        background: {BG};
+    }}
+    """
+
+    def __init__(self, *args, **kw) -> None:
+        super().__init__(*args, **kw)
+        self.ranges: list[tuple[int, int]] = []  # [start, end) text columns per tab
+
+    def on_click(self, event: events.Click) -> None:
+        """Select the tab under the pointer (plain spans, so no link underline)."""
+        col = event.x - self.styles.padding.left
+        for number, (start, end) in enumerate(self.ranges, 1):
+            if start <= col < end:
+                event.stop()
+                self.screen.action_select_tab(number)
+                return
 
 
 class DashboardScreen(Screen):
@@ -51,18 +71,20 @@ class DashboardScreen(Screen):
         """User asked for a quota refresh."""
 
     CSS = f"""
-    DashboardScreen {{ background: #0d1117; }}
-    #header {{ height: 1; padding: 0 1; background: #161b22; }}
-    #body {{ height: 1fr; }}
+    DashboardScreen {{ background: {BG}; color: {TEXT}; }}
+    #header {{ height: 1; padding: 0 1; background: {SURFACE}; color: {TEXT}; }}
+    #body {{ height: 1fr; background: {BG}; }}
     #empty {{ height: 1fr; content-align: center middle; color: {DIM}; display: none; }}
-    #quota {{ width: 36; padding: 0 1; border-left: tall #30363d; }}
-    #sidebar {{ border-right: tall #30363d; }}
-    #events {{ height: 8; border-top: tall #30363d; }}
+    #quota {{ width: 36; padding: 0 1; background: {SURFACE}; border-left: solid {BORDER}; display: none; }}
+    #quota.-has-data {{ display: block; }}
+    #sidebar {{ background: {SURFACE}; border-right: solid {BORDER}; }}
+    #grid {{ background: {BG}; }}
+    #events {{ height: 8; background: {BG}; border-top: solid {BORDER}; }}
     DashboardScreen.-empty #body {{ display: none; }}
     DashboardScreen.-empty #empty {{ display: block; }}
     DashboardScreen.-compact #quota {{ display: none; }}
     DashboardScreen.-compact #sidebar {{ display: none; }}
-    DashboardScreen AgentCard.-selected {{ border: heavy {ACCENT}; }}
+    DashboardScreen AgentCard.-selected {{ border: round {ACCENT}; background: {SURFACE_HI}; }}
     """
 
     BINDINGS = [
@@ -137,15 +159,30 @@ class DashboardScreen(Screen):
 
     def _render_tabbar(self) -> None:
         text = Text(no_wrap=True)
+        ranges: list[tuple[int, int]] = []
         for i, (key, label) in enumerate(zip(self.tab_keys, self.tab_labels), 1):
+            if i > 1:
+                text.append("  ")
             active = key == self.selected_key
-            style = f"bold {ACCENT} underline" if active else DIM
+            num = str(i)
+            rest = label[len(num):]
             start = len(text)
-            text.append(f" {label} ", style=style)
-            text.apply_meta({"@click": f"screen.select_tab({i})"}, start, len(text))
+            if active:
+                text.append(" ", style=f"on {SURFACE_HI}")
+                text.append(num, style=f"bold {ACCENT} on {SURFACE_HI}")
+                text.append(rest, style=f"bold {TEXT} on {SURFACE_HI}")
+                text.append(" ", style=f"on {SURFACE_HI}")
+            else:
+                text.append(" ")
+                text.append(num, style=DIM)
+                text.append(rest, style=MUTED)
+                text.append(" ")
+            ranges.append((start, len(text)))
         if not self.tab_keys:
             text.append("(oturum yok)", style=DIM)
-        self.query_one(TabBar).update(text)
+        tabbar = self.query_one(TabBar)
+        tabbar.ranges = ranges
+        tabbar.update(text)
 
     def action_select_tab(self, n: int) -> None:
         """Select tab number n (1-based)."""
@@ -266,11 +303,13 @@ class DashboardScreen(Screen):
 
     def _render_header(self) -> None:
         text = Text(no_wrap=True)
-        text.append("agent-watch", style=f"bold {ACCENT}")
-        text.append("  ·  ", style=DIM)
-        text.append(datetime.now().strftime("%H:%M:%S"))
-        text.append("  ·  ", style=DIM)
-        text.append("● live", style="#3fb950")
+        text.append("◆ ", style=ACCENT)
+        text.append("agent watch", style=f"bold {TEXT}")
+        text.append(" · ", style=DIM)
+        text.append(datetime.now().strftime("%H:%M:%S"), style=MUTED)
+        text.append(" · ", style=DIM)
+        text.append("● ", style=STATUS_COLORS[Status.DONE])
+        text.append("live", style=MUTED)
         self.query_one("#header", Static).update(text)
 
     def _tick(self) -> None:

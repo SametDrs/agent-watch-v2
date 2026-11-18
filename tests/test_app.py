@@ -14,8 +14,10 @@ import pytest
 
 from agent_watch import __version__, launcher
 from agent_watch.app import AgentWatchApp, build_parser, main
+from agent_watch.model import Status
 from agent_watch.poller import PollResult
 from agent_watch.ui.dashboard import DashboardScreen
+from agent_watch.ui.theme import ACCENT, BG, BORDER, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT
 from agent_watch.ui.widgets import CardGrid, QuotaPanel
 
 
@@ -64,7 +66,7 @@ async def test_dashboard_populates_and_updates_live(tmp_path: Path) -> None:
 
         key = f"claude:{SUB_ID}"
         assert "SubagentHandback" in card_text(app, key)
-        assert "tok" in card_text(app, key) and "out)" in card_text(app, key)
+        assert "tok" in card_text(app, key) and " out" in card_text(app, key)
 
         path = next(claude_home.glob(f"projects/*/{SID}/subagents/agent-{SUB_ID}.jsonl"))
         line = {
@@ -218,3 +220,35 @@ def test_window_hours_help_mentions_agy_and_codex() -> None:
     help_text = " ".join(build_parser().format_help().split())
     assert "--window-hours" in help_text
     assert "agy" in help_text and "Codex" in help_text and "only" in help_text
+
+
+async def test_agent_watch_theme_and_scrollbars(tmp_path: Path) -> None:
+    app = AgentWatchApp(
+        claude_home=tmp_path / "c",
+        agy_home=tmp_path / "a",
+        codex_home=tmp_path / "x",
+        no_quota=True,
+        proc_provider=lambda: [],
+    )
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        assert "agent-watch" in app.available_themes
+        assert app.theme == "agent-watch"
+        theme = app.current_theme
+        assert theme.dark is True
+        assert theme.primary == ACCENT
+        assert theme.background == BG
+        assert theme.surface == SURFACE
+        assert theme.panel == SURFACE_HI
+        assert theme.foreground == TEXT
+        assert theme.success == STATUS_COLORS[Status.DONE]
+        assert theme.warning == STATUS_COLORS[Status.RUNNING]
+        assert theme.error == STATUS_COLORS[Status.FAILED]
+
+        grid = app.screen.query_one(CardGrid)
+        assert grid.styles.scrollbar_size_vertical == 1
+        assert grid.styles.scrollbar_size_horizontal == 1
+        assert grid.styles.scrollbar_color.hex.lower() == BORDER
+        assert grid.styles.scrollbar_background.hex.lower() == SURFACE
+        assert grid.styles.scrollbar_color_hover.hex.lower() == ACCENT
+        assert grid.styles.scrollbar_color_active.hex.lower() == ACCENT

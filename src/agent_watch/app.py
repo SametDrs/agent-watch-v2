@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from textual.app import App
+from textual.theme import Theme
 
 from agent_watch import __version__, config, launcher, quota
+from agent_watch.model import Status
 from agent_watch.poller import PollResult, Poller
 from agent_watch.quota import QuotaService
 from agent_watch.sources.agy import AgyScanner
@@ -23,10 +25,34 @@ from agent_watch.sources.codex import CodexScanner
 from agent_watch.store import Store
 from agent_watch.ui.conversation import ConversationScreen
 from agent_watch.ui.dashboard import DashboardScreen
+from agent_watch.ui.theme import ACCENT, BG, BORDER, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT
 from agent_watch.ui.widgets import AgentCard, AgentList
 
 SCANNING_SUBTITLE = "taranıyor…"
 QUOTA_INTERVAL_SECONDS = 60.0
+
+AGENT_WATCH_THEME = Theme(
+    name="agent-watch",
+    primary=ACCENT,
+    accent=ACCENT,
+    foreground=TEXT,
+    background=BG,
+    surface=SURFACE,
+    panel=SURFACE_HI,
+    success=STATUS_COLORS[Status.DONE],
+    warning=STATUS_COLORS[Status.RUNNING],
+    error=STATUS_COLORS[Status.FAILED],
+    dark=True,
+    variables={
+        "scrollbar": BORDER,
+        "scrollbar-hover": ACCENT,
+        "scrollbar-active": ACCENT,
+        "scrollbar-background": SURFACE,
+        "scrollbar-background-hover": SURFACE,
+        "scrollbar-background-active": SURFACE,
+        "scrollbar-corner-color": SURFACE,
+    },
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -35,6 +61,21 @@ class AgentWatchApp(App):
     """Textual app showing Claude subagents, agy conversations, and Codex rollouts."""
 
     TITLE = "agent-watch"
+    CSS = f"""
+    * {{
+        scrollbar-size: 1 1;
+        scrollbar-color: {BORDER};
+        scrollbar-color-hover: {ACCENT};
+        scrollbar-color-active: {ACCENT};
+        scrollbar-background: {SURFACE};
+        scrollbar-background-hover: {SURFACE};
+        scrollbar-background-active: {SURFACE};
+        scrollbar-corner-color: {SURFACE};
+    }}
+    Footer {{
+        scrollbar-size: 0 0;
+    }}
+    """
 
     def __init__(
         self,
@@ -47,6 +88,7 @@ class AgentWatchApp(App):
         proc_provider: Callable[[], list[Any]] | None = None,
     ) -> None:
         super().__init__()
+        self.register_theme(AGENT_WATCH_THEME)
         self.claude_home = Path(claude_home) if claude_home else config.claude_home()
         self.agy_home = Path(agy_home) if agy_home else config.agy_home()
         self.codex_home = Path(codex_home) if codex_home else config.codex_home()
@@ -91,7 +133,7 @@ class AgentWatchApp(App):
                 _logger.warning("Failed to write lock file: %s", exc)
                 self.log.warning(f"Failed to write lock file: {exc}")
             self._release_claim_safely()
-        self.theme = "textual-dark"
+        self.theme = "agent-watch"
         self.sub_title = SCANNING_SUBTITLE
         self.push_screen(self.dashboard)
         # Start the loops only after the dashboard has been shown.
