@@ -30,6 +30,7 @@ from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, Quo
 
 EMPTY_TEXT = "Henüz ajan yok — Claude, agy ya da Codex çalıştırınca burada görünecek."
 LOG_BUFFER = 200
+NARROW_WIDTH = 100  # below this many columns the agent list (and quota panel) is hidden
 _UNSET: Any = object()
 
 
@@ -123,6 +124,8 @@ class DashboardScreen(Screen):
     DashboardScreen.-empty #empty {{ display: block; }}
     DashboardScreen.-compact #quota {{ display: none; }}
     DashboardScreen.-compact #sidebar {{ display: none; }}
+    DashboardScreen.-narrow #quota {{ display: none; }}
+    DashboardScreen.-narrow #sidebar {{ display: none; }}
     DashboardScreen AgentCard.-selected {{ border: round {ACCENT}; background: {SURFACE_HI}; }}
     """
 
@@ -175,8 +178,42 @@ class DashboardScreen(Screen):
         yield TotalsBar(id="totals")
         yield Footer()
 
+    def on_resize(self, event: events.Resize) -> None:
+        """Switch between wide and narrow layout on live resize."""
+        self._apply_width(event.size.width)
+
+    def _apply_width(self, width: int) -> None:
+        """Hide the list/quota below NARROW_WIDTH columns, restore them at >= NARROW_WIDTH."""
+        if width <= 0:
+            return
+        narrow = width < NARROW_WIDTH
+        if narrow == self.has_class("-narrow"):
+            return
+        self.set_class(narrow, "-narrow")
+        footer = self.query_one(Footer)
+        footer.compact = narrow
+        footer.show_command_palette = not narrow
+        if self._ready:
+            self._fix_focus()
+
+    def _fix_focus(self) -> None:
+        """Keep focus on something visible: a card while the list is hidden, else the list."""
+        if self.has_class("-timeline"):
+            return
+        focused = self.focused
+        if self.has_class("-narrow"):
+            if focused is None or isinstance(focused, AgentList):
+                cards = self.query_one(CardGrid).cards
+                card = cards.get(self.selected_agent_key or "") or next(iter(cards.values()), None)
+                if card is not None:
+                    card.focus()
+        elif focused is None:
+            self.query_one(AgentList).focus()
+
     def on_mount(self) -> None:
+        self._apply_width(self.size.width or self.app.size.width)
         self._ready = True
+        self.call_after_refresh(self._fix_focus)
         self._check_transitions(notify=False)  # prime: agents present now never notify
         self.set_interval(1.0, self._tick)
         self._rebuild_tabs()

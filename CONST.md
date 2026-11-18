@@ -29,3 +29,4 @@
   | `claude-sonnet-4-6` | 3.00 | 0.30 | 15.00 |
   | `claude-haiku-5-5` | 0.10 | 0.01 | 0.50 |
   | `claude-haiku-4-5` | 1.00 | 0.10 | 5.00 |
+- **Dar düzen (`ui/dashboard.py`):** `NARROW_WIDTH=100` sütundan dar terminalde ajan listesi ve kota paneli gizlenir, kart ızgarası tam genişliği kullanır, alt çubuk kompakt olur; canlı yeniden boyutlandırmada geri gelir.

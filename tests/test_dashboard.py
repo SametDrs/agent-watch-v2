@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from textual.app import App
 from textual.color import Color
 from textual.geometry import Region
-from textual.widgets import Static
+from textual.widgets import Footer, Static
 
 from agent_watch.model import STANDALONE_SESSION_KEY, UNLINKED_SESSION_KEY, Event, EventKind, Status, main_agent_key
 from agent_watch.sources.codex import CodexLimits
@@ -527,3 +527,78 @@ async def test_totals_cost_sums_priced_agents_and_marks_partial() -> None:
         app.screen._refresh_view()
         await pilot.pause()
         assert "cost ≈ $6.00+" in app.screen.query_one(TotalsBar).render().plain
+
+
+async def test_narrow_layout_hides_list_and_grid_uses_full_width() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen.has_class("-narrow")
+        assert not screen.query_one("#sidebar").display
+        grid = screen.query_one(CardGrid)
+        assert grid.region.x == 0 and grid.region.width == 90
+        assert grid.styles.grid_size_columns == 90 // 53  # same width rule as the wide layout
+        assert screen.query_one(Footer).has_class("-compact")
+
+
+async def test_wide_layout_keeps_list() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert not screen.has_class("-narrow")
+        assert screen.query_one("#sidebar").display
+        assert screen.query_one(CardGrid).region.x > 0
+        assert not screen.query_one(Footer).has_class("-compact")
+
+
+async def test_threshold_is_100_columns() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(99, 40)) as pilot:
+        await pilot.pause()
+        assert app.screen.has_class("-narrow")
+        await pilot.resize_terminal(100, 40)
+        await pilot.pause()
+        assert not app.screen.has_class("-narrow")
+
+
+async def test_live_resize_toggles_list_and_compact_and_timeline_still_work() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(140, 42)) as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen.query_one("#sidebar").display
+        await pilot.resize_terminal(90, 40)
+        await pilot.pause()
+        assert screen.has_class("-narrow") and not screen.query_one("#sidebar").display
+        assert screen.query_one(CardGrid).region.width == 90
+        # compact ('v') still toggles in narrow mode
+        await pilot.press("v")
+        assert screen.has_class("-compact")
+        await pilot.press("v")
+        assert not screen.has_class("-compact")
+        # timeline ('t') swaps the grid and 'escape' returns
+        await pilot.press("t")
+        await pilot.pause()
+        assert screen.has_class("-timeline")
+        assert screen.query_one("#timeline").display and not screen.query_one("#grid").display
+        assert screen.query_one("#timeline").region.width == 90
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not screen.has_class("-timeline") and screen.query_one("#grid").display
+        # back to wide: list returns
+        await pilot.resize_terminal(140, 42)
+        await pilot.pause()
+        assert not screen.has_class("-narrow") and screen.query_one("#sidebar").display
+        assert not screen.query_one(Footer).has_class("-compact")
+
+
+async def test_narrow_hides_quota_panel_and_focuses_a_card() -> None:
+    app = Host(build_store())
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        app.screen.update_quota({"Gemini 5h": (0.8, None)})
+        await pilot.pause()
+        assert not app.screen.query_one(QuotaPanel).display
+        assert isinstance(app.screen.focused, AgentCard)
