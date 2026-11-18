@@ -13,6 +13,7 @@ from .. import config
 from ..model import Event, EventKind, ShellCall, Status, main_agent_key, truncate_body, utc
 from ..procs import pid_alive
 from ..tail import JsonlTail
+from ..titles import short_title
 
 SHELL_TOOLS = ("Bash", "PowerShell")
 BG_RE = re.compile(r"background with ID:\s*([\w-]+)")
@@ -101,6 +102,17 @@ class _Main:
     cwd: str = ""
     started: datetime | None = None
     effort: str = ""
+
+
+def _first_text(msg: Any) -> str:
+    """Return the first plain text of a user message (str or text blocks)."""
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return content
+    for block in content if isinstance(content, list) else []:
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+            return block["text"]
+    return ""
 
 
 def _text_of(content: Any) -> str:
@@ -320,11 +332,13 @@ class ClaudeScanner:
         if not sub.started:
             sub.started = True
             title = sub.meta.get("description")
+            if not (isinstance(title, str) and title.strip()):
+                title = short_title(_first_text(rec.get("message")))
             model = sub.meta.get("model")
             effort = sub.meta.get("effort")
             self._emit(
                 ts, sid, key, EventKind.START,
-                title=title if isinstance(title, str) else None,
+                title=title if isinstance(title, str) and title else None,
                 model=model if isinstance(model, str) else None,
                 effort=effort if isinstance(effort, str) and effort else None,
             )

@@ -85,7 +85,7 @@ def test_parse_transcript_line_counts_and_malformed(fixtures_dir: Path) -> None:
 
     by_kind = {k: [e for e in events if e.kind == k] for k in EventKind}
     assert len(by_kind[EventKind.START]) == 1
-    assert by_kind[EventKind.START][0].title == "Create 3 small text files a.txt b.txt c.txt in the workspace"
+    assert by_kind[EventKind.START][0].title == "Create 3 small text files a.txt b.txt c.txt in the…"
     assert by_kind[EventKind.START][0].agent_key == "agy:conv-1"
     assert by_kind[EventKind.START][0].session_key == "sess-1"
 
@@ -148,7 +148,7 @@ def test_scanner_tools_done_with_old_mtime(tmp_path: Path, fixtures_dir: Path) -
     assert res.running == set()
     assert res.ended == {"conv-done": Status.DONE}
     assert len(res.convs) == 1
-    assert res.convs[0].title == "Create 3 small text files a.txt b.txt c.txt in the workspace"
+    assert res.convs[0].title == "Create 3 small text files a.txt b.txt c.txt in the…"
     assert res.convs[0].last_type == "PLANNER_RESPONSE"
     assert res.convs[0].last_has_tool_calls is False
 
@@ -304,7 +304,7 @@ def test_scanner_ignores_conversation_metadata_json(
     scanner = AgyScanner(agy_home=tmp_path, proc_provider=lambda: [])
     res = scanner.scan(now=datetime.fromtimestamp(now_ts, tz=timezone.utc), mtime_now=now_ts)
     assert read_calls == 0
-    assert res.convs[0].title == "Create 3 small text files a.txt b.txt c.txt in the workspace"
+    assert res.convs[0].title == "Create 3 small text files a.txt b.txt c.txt in the…"
 
 
 PLANNER_WITH_THINKING = {

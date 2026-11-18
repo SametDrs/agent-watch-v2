@@ -22,6 +22,7 @@ from agent_watch.model import (
     utc,
 )
 from agent_watch.tail import JsonlTail
+from agent_watch.titles import short_title
 
 _RUNNING_MTIME_SECONDS = 15.0
 _MAX_TITLE_LEN = 60
@@ -159,7 +160,7 @@ def parse_transcript_line(d: dict[str, Any], conv_id: str, session_key: str) -> 
                     session_key=session_key,
                     agent_key=agent_key,
                     kind=EventKind.START,
-                    title=_clip(stripped, _MAX_TITLE_LEN),
+                    title=short_title(stripped, _MAX_TITLE_LEN),
                 )
             )
         summary = _clip(stripped)
@@ -444,7 +445,7 @@ class AgyScanner:
                 if isinstance(content, str):
                     stripped = strip_user_request(content)
                     info.first_input_text = stripped
-                    self._transcript_titles[conv_id] = " ".join(stripped.split())[:_MAX_TITLE_LEN]
+                    self._transcript_titles[conv_id] = short_title(stripped, _MAX_TITLE_LEN)
 
             events.extend(parse_transcript_line(row, conv_id, STANDALONE_SESSION_KEY))
 

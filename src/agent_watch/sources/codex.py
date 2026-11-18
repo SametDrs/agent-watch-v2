@@ -22,6 +22,7 @@ from agent_watch.model import (
 )
 from agent_watch.procs import ProcInfo
 from agent_watch.tail import JsonlTail
+from agent_watch.titles import short_title
 
 _RUNNING_MTIME_SECONDS = 15.0
 _MAX_TITLE_LEN = 60
@@ -366,7 +367,7 @@ def _emit_prompt(
     title: str | None = None
     if not state.get("titled"):
         state["titled"] = True
-        title = _clip(text, _MAX_TITLE_LEN)
+        title = short_title(text, _MAX_TITLE_LEN) or None
 
     status = _reopen_status(state, any_end=True)
     state["task_complete"] = False
