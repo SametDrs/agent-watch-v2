@@ -843,3 +843,67 @@ async def test_many_events_append_without_rebuilding_blocks() -> None:
         await pilot.pause()
         assert len(log.lines) == len(before) + 2
         assert all(a is b for a, b in zip(before, log.lines))
+
+
+# ---- pairing tool results by id ----
+
+
+def _paired(log: TranscriptLog) -> list[tuple[str, str]]:
+    """(call summary, result body) for every tool block, in transcript order."""
+    return [
+        (b.start_ev.summary if b.start_ev else "", b.end_ev.body if b.end_ev else "")
+        for b in log.tool_blocks()
+    ]
+
+
+async def test_tool_results_pair_by_id_when_out_of_order() -> None:
+    store = Store()
+    store.apply([
+        ev(EventKind.TOOL_START, 0, tool="Bash", summary="Bash first", tool_id="t1"),
+        ev(EventKind.TOOL_START, 1, tool="Bash", summary="Bash second", tool_id="t2"),
+        ev(EventKind.TOOL_END, 2, tool="Bash", body="result-two", tool_id="t2"),
+        ev(EventKind.TOOL_END, 3, tool="Bash", body="result-one", tool_id="t1"),
+    ])
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        assert _paired(log) == [("Bash first", "result-one"), ("Bash second", "result-two")]
+
+
+async def test_tool_results_without_ids_fall_back_to_fifo() -> None:
+    store = Store()
+    store.apply([
+        ev(EventKind.TOOL_START, 0, tool="Bash", summary="Bash first"),
+        ev(EventKind.TOOL_START, 1, tool="Read", summary="Read other"),
+        ev(EventKind.TOOL_START, 2, tool="Bash", summary="Bash second", tool_id="t2"),
+        ev(EventKind.TOOL_END, 3, tool="Bash", body="r-a"),
+        ev(EventKind.TOOL_END, 4, tool="Bash", body="r-b"),
+        ev(EventKind.TOOL_END, 5, tool="Read", body="r-read"),
+    ])
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        assert _paired(log) == [
+            ("Bash first", "r-a"),
+            ("Read other", "r-read"),
+            ("Bash second", "r-b"),
+        ]
+
+
+async def test_tool_result_with_unknown_id_is_not_paired_by_name() -> None:
+    store = Store()
+    store.apply([
+        ev(EventKind.TOOL_START, 0, tool="Bash", summary="Bash call", tool_id="t1"),
+        ev(EventKind.TOOL_END, 1, tool="Bash", body="stray", tool_id="gone"),
+    ])
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        assert _paired(log) == [("Bash call", ""), ("", "stray")]
+
+
+def test_event_tool_id_defaults_to_none() -> None:
+    assert ev(EventKind.TOOL_START).tool_id is None

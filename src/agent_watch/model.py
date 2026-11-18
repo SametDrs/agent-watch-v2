@@ -62,6 +62,7 @@ class Event:
     effort: str | None = None
     tokens_cached: int = 0
     tokens_reasoning: int = 0
+    tool_id: str | None = None
 
 
 @dataclass

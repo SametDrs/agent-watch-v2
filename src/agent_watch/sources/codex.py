@@ -597,6 +597,7 @@ def _handle_response_item(
                 status=status,
                 model=model,
                 effort=effort,
+                tool_id=call_id or None,
             )
         ]
 
@@ -620,6 +621,7 @@ def _handle_response_item(
                 status=status,
                 model=model,
                 effort=effort,
+                tool_id=call_id or None,
             )
         ]
 

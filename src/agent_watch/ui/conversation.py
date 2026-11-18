@@ -636,10 +636,17 @@ class TranscriptLog(RichLog):
         return self._append(_Block(key=key, kind="plain", ev=ev, renderable=renderable))
 
     def _match_open_call(self, end: Event) -> _Block | None:
-        """Pair a result with the oldest unanswered call of the same tool (FIFO)."""
+        """Pair a result with its call: by tool_id when both sides carry one, else oldest same-name call (FIFO)."""
+        if end.tool_id:
+            for i, block in enumerate(self._open_calls):
+                if block.start_ev is not None and block.start_ev.tool_id == end.tool_id:
+                    return self._open_calls.pop(i)
         name = end.tool or ""
         for i, block in enumerate(self._open_calls):
-            call_name = (block.start_ev.tool if block.start_ev is not None else None) or ""
+            start = block.start_ev
+            if end.tool_id and start is not None and start.tool_id:
+                continue  # both have ids and they differ: never pair by name
+            call_name = (start.tool if start is not None else None) or ""
             if not name or not call_name or name == call_name:
                 return self._open_calls.pop(i)
         return None
