@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from typing import Any
@@ -13,12 +14,15 @@ from rich.measure import Measurement
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.geometry import Size
 from textual.screen import Screen
+from textual.strip import Strip
 from textual.widgets import Footer, RichLog, Static
 
 from agent_watch import config
@@ -97,13 +101,16 @@ def _format_ts(ts: datetime | None) -> str:
     return _as_utc(ts).astimezone().strftime("%H:%M:%S")
 
 
-def _label_row(left: Text, ts: datetime | None) -> RenderableType:
+def _label_row(left: Text, ts: datetime | None, single_line: bool = False) -> RenderableType:
     """Place a block label on the left with an optional right-aligned DIM timestamp."""
     stamp = _format_ts(ts)
     if not stamp:
         return left
     row = Table.grid(expand=True)
-    row.add_column(ratio=1, overflow="fold")
+    if single_line:
+        row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+    else:
+        row.add_column(ratio=1, overflow="fold")
     row.add_column(justify="right", no_wrap=True)
     row.add_row(left, Text(f"  {stamp}", style=DIM))
     return row
@@ -305,8 +312,10 @@ def _clip_arg_value(text: str, max_lines: int = _ARG_MAX_LINES, max_chars: int =
     return "\n".join(out_lines)
 
 
-def _tool_header(ev: Event, args_dict: dict[str, Any] | None) -> Text:
-    """Build the '▸ <ToolName> <summary>' header line for a tool call."""
+def _tool_header(
+    ev: Event, args_dict: dict[str, Any] | None, expanded: bool = False
+) -> Text:
+    """Build the '▸ <ToolName> <summary>' header line (▾ when expanded) for a tool call."""
     tool_name = (ev.tool or "").strip()
     raw_summary = " ".join(ev.summary.split()) if ev.summary else ""
     detail = ""
@@ -330,8 +339,8 @@ def _tool_header(ev: Event, args_dict: dict[str, Any] | None) -> Text:
                 detail = collapsed[:79] + "…" if len(collapsed) > 80 else collapsed
                 break
 
-    header = Text()
-    header.append(f"▸ {tool_name}", style=f"bold {ACCENT}")
+    header = Text(no_wrap=True, overflow="ellipsis")
+    header.append(f"{'▾' if expanded else '▸'} {tool_name}", style=f"bold {ACCENT}")
     if detail:
         header.append(f" {detail}", style=MUTED)
     return header
@@ -368,6 +377,111 @@ def _render_tool_panel(args_dict: dict[str, Any] | None, raw_body: Any) -> Panel
     )
 
 
+class _Gutter:
+    """Wrap a block with a fixed 2-column gutter; a selected block gets an ACCENT bar and highlight."""
+
+    def __init__(self, inner: RenderableType, selected: bool) -> None:
+        self.inner = inner
+        self.selected = selected
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        inner_opts = options.update(width=max(1, options.max_width - 2))
+        newline = Segment.line()
+        if self.selected:
+            hi = Style(bgcolor=SURFACE_HI)
+            lead = [Segment("▌", Style(color=ACCENT, bgcolor=SURFACE_HI)), Segment(" ", hi)]
+        else:
+            hi = None
+            lead = [Segment("  ")]
+        for line in console.render_lines(self.inner, inner_opts, pad=True):
+            yield from lead
+            yield from (Segment.apply_style(line, style=hi) if hi is not None else line)
+            yield newline
+
+    def __rich_measure__(
+        self, console: Console, options: ConsoleOptions
+    ) -> Measurement:
+        return Measurement(3, options.max_width)
+
+
+def _first_line(text: str) -> str:
+    """Return the first non-blank line of text with whitespace collapsed."""
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        collapsed = " ".join(line.split())
+        if collapsed:
+            return collapsed
+    return ""
+
+
+def _is_error_result(end: Event) -> bool:
+    return end.status == Status.FAILED or bool(end.summary and "error" in end.summary.lower())
+
+
+def _result_preview(end: Event | None) -> Text:
+    """One-line '↳ <first line>' preview of a tool result ('↳ …' while it is still pending)."""
+    line = Text(no_wrap=True, overflow="ellipsis")
+    if end is None:
+        line.append("↳ …", style=DIM)
+        return line
+    err_color = STATUS_COLORS[Status.FAILED]
+    is_err = _is_error_result(end)
+    first = _first_line(end.body)
+    line.append("↳ ", style=DIM)
+    if is_err and end.summary:
+        line.append(end.summary, style=err_color)
+        if first:
+            line.append(" · ", style=DIM)
+    if first:
+        line.append(first, style=err_color if is_err else MUTED)
+    elif not (is_err and end.summary):
+        line.append("(empty)", style=DIM)
+    return line
+
+
+def _result_full(end: Event | None) -> list[RenderableType]:
+    """Full result section of an expanded tool block."""
+    if end is None:
+        return [Text("↳ …", style=DIM)]
+    err_color = STATUS_COLORS[Status.FAILED]
+    is_err = _is_error_result(end)
+    label = f"↳ result · {end.summary}" if end.summary else "↳ result"
+    parts: list[RenderableType] = [
+        _label_row(Text(label, style=err_color if is_err else DIM), end.ts)
+    ]
+    if end.body:
+        parts.append(Text(_clip_body(end.body, TOOL_RESULT_CAP), style=err_color if is_err else MUTED))
+    return parts
+
+
+def render_tool_block(
+    start: Event | None,
+    end: Event | None,
+    *,
+    expanded: bool = False,
+    selected: bool = False,
+) -> RenderableType:
+    """Render one tool call (and its paired result) collapsed to two lines or fully expanded."""
+    ref = start if start is not None else end
+    assert ref is not None
+    if start is not None:
+        args_dict = _parse_tool_args(start.body)
+        head = _tool_header(start, args_dict, expanded)
+    else:
+        name = ((end.tool if end is not None else None) or "").strip() or "result"
+        head = Text(no_wrap=True, overflow="ellipsis")
+        head.append(f"{'▾' if expanded else '▸'} {name}", style=f"bold {ACCENT}")
+    parts: list[RenderableType] = [_label_row(head, ref.ts, single_line=True)]
+    if not expanded:
+        parts.append(_result_preview(end))
+    else:
+        if start is not None and (panel := _render_tool_panel(args_dict, start.body)) is not None:
+            parts.append(panel)
+        parts.extend(_result_full(end))
+    return _Gutter(Group(*parts), selected)
+
+
 def render_event(ev: Event) -> RenderableType | None:
     """Render a normalized Event as a role-labelled Rich block, or None to hide it."""
     if ev.kind in (EventKind.USAGE, EventKind.START):
@@ -396,26 +510,10 @@ def render_event(ev: Event) -> RenderableType | None:
         return Group(header, body_part, Text(""))
 
     if ev.kind == EventKind.TOOL_START:
-        args_dict = _parse_tool_args(ev.body)
-        header = _label_row(_tool_header(ev, args_dict), ev.ts)
-        parts = [header]
-        if (panel := _render_tool_panel(args_dict, ev.body)) is not None:
-            parts.append(panel)
-        parts.append(Text(""))
-        return Group(*parts)
+        return render_tool_block(ev, None, expanded=True)
 
     if ev.kind == EventKind.TOOL_END:
-        err_color = STATUS_COLORS[Status.FAILED]
-        is_err = ev.status == Status.FAILED or bool(ev.summary and "error" in ev.summary.lower())
-        header_label = f"↳ result · {ev.summary}" if ev.summary else "↳ result"
-        header = _label_row(Text(header_label, style=err_color if is_err else DIM), ev.ts)
-        parts = [header]
-        if ev.body:
-            parts.append(
-                Text(_clip_body(ev.body, TOOL_RESULT_CAP), style=err_color if is_err else MUTED)
-            )
-        parts.append(Text(""))
-        return Group(*parts)
+        return render_tool_block(None, ev, expanded=True)
 
     if ev.kind == EventKind.ERROR:
         err_color = STATUS_COLORS[Status.FAILED]
@@ -445,8 +543,45 @@ def render_event(ev: Event) -> RenderableType | None:
     return None
 
 
+@dataclass(eq=False)
+class _Block:
+    """One rendered transcript block occupying lines[start:start + n] of the log."""
+
+    key: int
+    kind: str  # "tool" or "plain"
+    ev: Event
+    renderable: RenderableType | None = None
+    start_ev: Event | None = None
+    end_ev: Event | None = None
+    lead_blank: bool = False
+    expanded: bool = False
+    tool_idx: int = -1
+    start: int = 0
+    n: int = 0
+    rendered: bool = False
+
+
+_MAX_OPEN_CALLS = 256
+
+
 class TranscriptLog(RichLog):
-    """Scrollable read-only transcript log that follows tail until scrolled up."""
+    """Scrollable read-only transcript log that follows tail until scrolled up.
+
+    Events are appended incrementally as blocks. Tool calls render collapsed (header plus
+    one-line result preview) and can be selected and expanded; only the touched blocks are
+    re-rendered and spliced into ``lines``.
+    """
+
+    BINDINGS = [
+        Binding("j", "select_next", "Seç", key_display="j/k"),
+        Binding("down", "select_next", "Sonraki", show=False),
+        Binding("k", "select_prev", "Önceki", show=False),
+        Binding("up", "select_prev", "Önceki", show=False),
+        Binding("enter", "toggle_block", "Aç/Kapat"),
+        Binding("space", "toggle_block", "Aç/Kapat", show=False),
+        Binding("e", "expand_all", "Hepsini aç"),
+        Binding("c", "collapse_all", "Hepsini kapat"),
+    ]
 
     def __init__(self, **kw) -> None:
         kw.setdefault("wrap", True)
@@ -456,6 +591,222 @@ class TranscriptLog(RichLog):
         super().__init__(**kw)
         self.following: bool = True
         self._pending_scroll_end: int = 0
+        self._blocks: list[_Block] = []
+        self._tools: list[_Block] = []
+        self._open_calls: list[_Block] = []
+        self._pending: list[_Block] = []
+        self._selected: _Block | None = None
+
+    # ---- block bookkeeping ----
+    @property
+    def selected_key(self) -> int | None:
+        """Event index of the selected tool block, if any."""
+        return self._selected.key if self._selected is not None else None
+
+    def tool_blocks(self) -> list[_Block]:
+        """Tool blocks in transcript order."""
+        return list(self._tools)
+
+    def reset(self) -> None:
+        """Drop all blocks, selection and expand state."""
+        self.clear()
+        self._blocks.clear()
+        self._tools.clear()
+        self._open_calls.clear()
+        self._pending.clear()
+        self._selected = None
+
+    def add_event(self, key: int, ev: Event) -> bool:
+        """Append one event (key = stable event index); return True if the log got taller."""
+        if ev.kind == EventKind.TOOL_START:
+            block = _Block(key=key, kind="tool", ev=ev, start_ev=ev)
+            self._open_calls.append(block)
+            if len(self._open_calls) > _MAX_OPEN_CALLS:
+                self._open_calls.pop(0)
+            return self._append(block)
+        if ev.kind == EventKind.TOOL_END:
+            match = self._match_open_call(ev)
+            if match is not None:
+                match.end_ev = ev
+                return self._refresh_blocks([match])
+            return self._append(_Block(key=key, kind="tool", ev=ev, end_ev=ev))
+        renderable = render_event(ev)
+        if renderable is None:
+            return False
+        return self._append(_Block(key=key, kind="plain", ev=ev, renderable=renderable))
+
+    def _match_open_call(self, end: Event) -> _Block | None:
+        """Pair a result with the oldest unanswered call of the same tool (FIFO)."""
+        name = end.tool or ""
+        for i, block in enumerate(self._open_calls):
+            call_name = (block.start_ev.tool if block.start_ev is not None else None) or ""
+            if not name or not call_name or name == call_name:
+                return self._open_calls.pop(i)
+        return None
+
+    def _block_renderable(self, block: _Block) -> RenderableType:
+        if block.kind == "tool":
+            return render_tool_block(
+                block.start_ev,
+                block.end_ev,
+                expanded=block.expanded,
+                selected=block is self._selected,
+            )
+        assert block.renderable is not None
+        if block.lead_blank:
+            return Group(Text(""), block.renderable)
+        return block.renderable
+
+    def _sync_size(self) -> None:
+        self._line_cache.clear()
+        self.virtual_size = Size(self._widest_line_width, len(self.lines))
+        self.refresh()
+
+    def _strips(self, block: _Block) -> list[Strip]:
+        """Render a block at the current width without leaving it in ``lines``."""
+        before = len(self.lines)
+        self.write(self._block_renderable(block), expand=True, scroll_end=False)
+        new = self.lines[before:]
+        del self.lines[before:]
+        return new
+
+    def _append(self, block: _Block) -> bool:
+        previous = self._blocks[-1] if self._blocks else None
+        block.lead_blank = (
+            block.kind == "plain" and previous is not None and previous.kind == "tool"
+        )
+        if block.kind == "tool":
+            block.tool_idx = len(self._tools)
+            self._tools.append(block)
+        self._blocks.append(block)
+        if not self._size_known:
+            self._pending.append(block)
+            return True
+        self._write_new(block)
+        return True
+
+    def _write_new(self, block: _Block) -> None:
+        before = len(self.lines)
+        self.write(self._block_renderable(block), expand=True, scroll_end=False)
+        block.start = before
+        block.n = len(self.lines) - before
+        block.rendered = True
+
+    def _flush_pending(self) -> None:
+        pending, self._pending = self._pending, []
+        for block in pending:
+            self._write_new(block)
+
+    def _apply(self, changed: dict[_Block, list[Strip]]) -> bool:
+        """Splice re-rendered blocks into ``lines``; return True if the line count changed."""
+        if not changed:
+            return False
+        grew = any(len(s) != b.n for b, s in changed.items())
+        if not grew:
+            for block, strips in changed.items():
+                self.lines[block.start : block.start + block.n] = strips
+        else:
+            new_lines: list[Strip] = []
+            for block in self._blocks:
+                if not block.rendered:
+                    continue
+                strips = changed.get(block)
+                if strips is None:
+                    strips = self.lines[block.start : block.start + block.n]
+                block.start = len(new_lines)
+                block.n = len(strips)
+                new_lines.extend(strips)
+            self.lines = new_lines
+        self._sync_size()
+        return grew
+
+    def _refresh_blocks(self, blocks: list[_Block]) -> bool:
+        changed = {b: self._strips(b) for b in blocks if b.rendered}
+        return self._apply(changed)
+
+    # ---- scrolling helpers ----
+    def _viewport_anchor(self) -> _Block | None:
+        top = round(self.scroll_y)
+        for block in self._blocks:
+            if block.rendered and block.start + block.n > top:
+                return block
+        return None
+
+    def _keep_anchor(self, anchor: _Block | None, offset: int, was_following: bool) -> None:
+        if was_following:
+            self.scroll_end(animate=False, x_axis=False)
+        elif anchor is not None:
+            self.scroll_to(y=max(0, anchor.start - offset), animate=False, immediate=True)
+
+    def _reveal(self, block: _Block) -> None:
+        top = round(self.scroll_y)
+        height = max(1, self.scrollable_content_region.height)
+        if block.start < top:
+            self.scroll_to(y=block.start, animate=False, immediate=True)
+        elif block.start + block.n > top + height:
+            self.scroll_to(y=block.start + block.n - height, animate=False, immediate=True)
+
+    # ---- selection and expansion ----
+    def _select(self, block: _Block | None) -> None:
+        old = self._selected
+        if block is old:
+            return
+        self._selected = block
+        self._refresh_blocks([b for b in (old, block) if b is not None])
+        if block is not None:
+            self._reveal(block)
+
+    def _move(self, step: int) -> None:
+        tools = [b for b in self._tools if b.rendered]
+        if not tools:
+            (self.scroll_down if step > 0 else self.scroll_up)()
+            return
+        if self._selected is None:
+            top = round(self.scroll_y)
+            bottom = top + max(1, self.scrollable_content_region.height)
+            if step > 0:
+                target = next((b for b in tools if b.start >= top), tools[-1])
+            else:
+                target = next((b for b in reversed(tools) if b.start < bottom), tools[0])
+            self._select(target)
+            return
+        idx = max(0, min(len(self._tools) - 1, self._selected.tool_idx + step))
+        self._select(self._tools[idx])
+
+    def action_select_next(self) -> None:
+        self._move(1)
+
+    def action_select_prev(self) -> None:
+        self._move(-1)
+
+    def toggle_selected(self) -> None:
+        """Expand or collapse the selected tool block."""
+        block = self._selected
+        if block is None or not block.rendered:
+            return
+        self._set_expanded([block], not block.expanded, anchor=block)
+
+    def _set_expanded(self, blocks: list[_Block], expanded: bool, anchor: _Block | None) -> None:
+        targets = [b for b in blocks if b.rendered and b.expanded != expanded]
+        if not targets:
+            return
+        if anchor is None:
+            anchor = self._viewport_anchor()
+        offset = anchor.start - round(self.scroll_y) if anchor is not None else 0
+        was_following = self.following
+        for block in targets:
+            block.expanded = expanded
+        self._refresh_blocks(targets)
+        self._keep_anchor(anchor, offset, was_following)
+
+    def action_toggle_block(self) -> None:
+        self.toggle_selected()
+
+    def action_expand_all(self) -> None:
+        self._set_expanded(self._tools, True, anchor=self._selected)
+
+    def action_collapse_all(self) -> None:
+        self._set_expanded(self._tools, False, anchor=self._selected)
 
     def _finish_pending_scroll_end(self) -> None:
         self._pending_scroll_end = max(0, self._pending_scroll_end - 1)
@@ -499,7 +850,10 @@ class TranscriptLog(RichLog):
 
     def on_resize(self, event: events.Resize) -> None:
         was_following = self.following
+        first_size = not self._size_known
         super().on_resize(event)
+        if first_size and self._size_known:
+            self._flush_pending()
         if was_following and self.max_scroll_y > 0:
             self.scroll_end(animate=False, x_axis=False)
 
@@ -650,7 +1004,7 @@ class ConversationScreen(Screen):
         if total == 0:
             return
         if total < self._seen_count:
-            log.clear()
+            log.reset()
             self._seen_count = 0
         new_count = total - self._seen_count
         if new_count <= 0:
@@ -658,12 +1012,11 @@ class ConversationScreen(Screen):
 
         follow = log.following
         events_buf = self.store.events(self.agent_key)
+        first_index = total - len(events_buf)
         start = max(0, len(events_buf) - new_count)
         appended = False
-        for ev in events_buf[start:]:
-            rendered = render_event(ev)
-            if rendered is not None:
-                log.write(rendered, expand=True, scroll_end=False)
+        for i in range(start, len(events_buf)):
+            if log.add_event(first_index + i, events_buf[i]):
                 appended = True
         self._seen_count = total
         if appended and follow:
