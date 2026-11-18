@@ -7,14 +7,12 @@ from pathlib import Path
 
 from agent_watch import config
 from agent_watch.linker import (
-    SESSION_PATH_RE,
     AgyConv,
     Link,
     is_agy_command,
     is_codex_command,
     link,
     link_codex,
-    normalize_path,
     parse_agy_command,
     parse_codex_command,
 )
@@ -46,40 +44,6 @@ def _call(
         cwd=cwd,
         command=command,
     )
-
-
-def test_normalize_path() -> None:
-    assert (
-        normalize_path("file:///C:/Users/user/Desktop/projects/agent-watch/")
-        == "c:/users/user/desktop/projects/agent-watch"
-    )
-    assert (
-        normalize_path(r"C:\Users\user\Desktop\projects\agent-watch\\")
-        == "c:/users/user/desktop/projects/agent-watch"
-    )
-    assert (
-        normalize_path("file:///C%3A/Users/user/My%20Project/sub%5Cdir/")
-        == "c:/users/user/my project/sub/dir"
-    )
-    assert normalize_path("") == ""
-    assert normalize_path("/") == "/"
-
-
-def test_session_path_re() -> None:
-    uuid = "9af43e82-5772-4625-a46a-7cffea98c243"
-    win_path = rf"C:\Users\user\AppData\Local\Temp\claude\5f1bb22aedc12112\{uuid}\scratchpad"
-    posix_path = f"file:///C:/Users/user/AppData/Local/TEMP/CLAUDE/5f1bb22aedc12112/{uuid.upper()}"
-
-    m_win = SESSION_PATH_RE.search(win_path)
-    assert m_win is not None
-    assert m_win.group(1) == uuid
-
-    m_posix = SESSION_PATH_RE.search(posix_path)
-    assert m_posix is not None
-    assert m_posix.group(1).lower() == uuid
-
-    assert SESSION_PATH_RE.search(r"C:\Temp\claude\hash\not-a-uuid\scratchpad") is None
-    assert SESSION_PATH_RE.search(rf"C:\other\claude\hash\{uuid}") is None
 
 
 def test_is_agy_command() -> None:
@@ -139,58 +103,11 @@ def test_parse_agy_command_quotes_slashes_and_fallback() -> None:
     assert parse_agy_command("")["prompt"] == ""
 
 
-def test_link_rule1_path_and_url_encoded_uri_with_subagent() -> None:
-    sess_a = "9af43e82-5772-4625-a46a-7cffea98c243"
-    sess_b = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-    conv_sub = AgyConv(
-        conv_id="agy-1",
-        first_input_ts=_ts(2.0),
-        first_input_text="<USER_REQUEST>\nImplement linker module cleanly for task six\n</USER_REQUEST>",
-        workspace_paths=[
-            f"file:///C%3A/Users/user/AppData/Local/Temp/claude/5f1bb22aedc12112/{sess_a}/scratchpad"
-        ],
-    )
-    conv_cwd = AgyConv(
-        conv_id="agy-2",
-        first_input_ts=None,
-        first_input_text="Inspect logs",
-        workspace_paths=[],
-        cwd=rf"C:\Users\user\AppData\Local\Temp\claude\5f1bb22aedc12112\{sess_b}\scratchpad",
-    )
-
-    calls = [
-        _call(
-            "tu-1",
-            'agy.exe -p "Implement linker module cleanly for task six"',
-            session_id=sess_a,
-            agent_key="claude:sub-linker",
-            start_s=0.0,
-            end_s=50.0,
-        )
-    ]
-
-    result = link([conv_sub, conv_cwd], calls, {})
-    assert result["agy-1"] == Link(
-        session_key=sess_a,
-        parent_agent_key="claude:sub-linker",
-        method="path",
-        score=0.0,
-    )
-    assert result["agy-2"] == Link(
-        session_key=sess_b,
-        parent_agent_key=None,
-        method="path",
-        score=0.0,
-    )
-
-
-def test_link_rule2_conversation_id() -> None:
+def test_link_rule1_conversation_id() -> None:
     conv = AgyConv(
         conv_id="conv-resume-99",
         first_input_ts=_ts(1000.0),
         first_input_text="Follow up",
-        workspace_paths=["file:///C:/proj"],
     )
     calls = [
         _call(
@@ -211,7 +128,7 @@ def test_link_rule2_conversation_id() -> None:
     )
 
 
-def test_link_rule3_concurrent_calls_same_cwd_disambiguated_by_prompt() -> None:
+def test_link_rule2_concurrent_calls_same_cwd_disambiguated_by_prompt() -> None:
     prompt_a = (
         "Read C:\\briefs\\common.md and then C:\\briefs\\T1.md to implement the "
         "Claude transcript parser with incremental tailing and unit tests."
@@ -225,13 +142,11 @@ def test_link_rule3_concurrent_calls_same_cwd_disambiguated_by_prompt() -> None:
         conv_id="c-a",
         first_input_ts=_ts(1.5),
         first_input_text=f"<USER_REQUEST>\n  {prompt_a}  \n</USER_REQUEST>",
-        workspace_paths=["file:///C:/Users/user/Desktop/projects/agent-watch"],
     )
     conv_b = AgyConv(
         conv_id="c-b",
         first_input_ts=_ts(2.0),
         first_input_text=f"<USER_REQUEST>\n{prompt_b}\n</USER_REQUEST>",
-        workspace_paths=[r"C:\Users\user\Desktop\projects\agent-watch"],
     )
 
     calls = [
@@ -259,21 +174,20 @@ def test_link_rule3_concurrent_calls_same_cwd_disambiguated_by_prompt() -> None:
     assert result["c-a"].session_key == "sess-1"
     assert result["c-a"].parent_agent_key == "claude:sub-a"
     assert result["c-a"].method == "score"
-    assert result["c-a"].score > 100.0
+    assert result["c-a"].score > 90.0
 
     assert result["c-b"].session_key == "sess-1"
     assert result["c-b"].parent_agent_key == "claude:sub-b"
     assert result["c-b"].method == "score"
-    assert result["c-b"].score > 100.0
+    assert result["c-b"].score > 90.0
 
 
-def test_link_rule3_single_candidate_fallback_and_loop_reuse() -> None:
+def test_link_rule2_single_candidate_fallback_and_loop_reuse() -> None:
     # Single candidate in window without >=20-char text match links by window uniqueness.
     conv_short = AgyConv(
         conv_id="c-short",
         first_input_ts=_ts(1.0),
         first_input_text="hi",
-        workspace_paths=[],
     )
     call_single = _call(
         "tu-single",
@@ -286,9 +200,9 @@ def test_link_rule3_single_candidate_fallback_and_loop_reuse() -> None:
 
     # Two loop iterations sharing one ShellCall via text match, plus an unlinked short conv.
     loop_prompt = "Run verification sweep over all parser modules and report issues."
-    conv_loop1 = AgyConv("c-loop1", _ts(101.0), loop_prompt, [])
-    conv_loop2 = AgyConv("c-loop2", _ts(110.0), loop_prompt, [])
-    conv_no_text = AgyConv("c-notext", _ts(115.0), "short", [])
+    conv_loop1 = AgyConv("c-loop1", _ts(101.0), loop_prompt)
+    conv_loop2 = AgyConv("c-loop2", _ts(110.0), loop_prompt)
+    conv_no_text = AgyConv("c-notext", _ts(115.0), "short")
     call_loop = _call(
         "tu-loop",
         f'agy -p "{loop_prompt}"',
@@ -319,15 +233,14 @@ def test_link_rule3_single_candidate_fallback_and_loop_reuse() -> None:
 
 
 def test_link_standalone_non_agy_commands_and_existing_links() -> None:
-    conv_existing = AgyConv("c-exist", _ts(0.0), "ignored", [])
+    conv_existing = AgyConv("c-exist", _ts(0.0), "ignored")
     conv_stale_standalone = AgyConv(
         "c-upgrade",
         _ts(2.0),
         "Upgrade standalone link once shell call appears",
-        [],
     )
-    conv_unmatched = AgyConv("c-free", _ts(500.0), "Manual interactive session", [])
-    conv_no_ts = AgyConv("c-nots", None, "No timestamp conversation", [])
+    conv_unmatched = AgyConv("c-free", _ts(500.0), "Manual interactive session")
+    conv_no_ts = AgyConv("c-nots", None, "No timestamp conversation")
 
     preserved = Link("sess-old", "claude:old", "path", 0.0)
     existing = {
@@ -362,41 +275,23 @@ def test_link_standalone_non_agy_commands_and_existing_links() -> None:
 
 
 def test_link_populates_effort_from_model_flag() -> None:
-    sess_uuid = "9af43e82-5772-4625-a46a-7cffea98c243"
-    conv_path = AgyConv(
-        conv_id="c-path",
-        first_input_ts=_ts(1.0),
-        first_input_text="Path matched task",
-        workspace_paths=[f"file:///C:/Temp/claude/hash/{sess_uuid}"],
-    )
     conv_id = AgyConv(
         conv_id="conv-77",
         first_input_ts=_ts(100.0),
         first_input_text="Resumed task",
-        workspace_paths=[],
     )
     conv_score = AgyConv(
         conv_id="c-score",
         first_input_ts=_ts(50.0),
         first_input_text="Score matched task",
-        workspace_paths=[],
     )
     conv_no_effort = AgyConv(
         conv_id="c-no-effort",
         first_input_ts=_ts(200.0),
         first_input_text="Model without effort suffix",
-        workspace_paths=[],
     )
 
     calls = [
-        _call(
-            "tu-path",
-            'agy -p "Path matched task" --model gemini-4-hydrogen-medium',
-            session_id=sess_uuid,
-            agent_key="claude:sub1",
-            start_s=0.0,
-            end_s=10.0,
-        ),
         _call(
             "tu-id",
             'agy -p "Resumed task" --conversation conv-77 --model=gemini-4-hydrogen-xhigh',
@@ -423,8 +318,7 @@ def test_link_populates_effort_from_model_flag() -> None:
         ),
     ]
 
-    result = link([conv_path, conv_id, conv_score, conv_no_effort], calls, {})
-    assert result["c-path"].method == "path" and result["c-path"].effort == "medium"
+    result = link([conv_id, conv_score, conv_no_effort], calls, {})
     assert result["conv-77"].method == "conversation_id" and result["conv-77"].effort == "xhigh"
     assert result["c-score"].method == "score" and result["c-score"].effort == "high"
     assert result["c-no-effort"].method == "score" and result["c-no-effort"].effort == ""

@@ -305,7 +305,6 @@ def test_scanner_ignores_conversation_metadata_json(
     res = scanner.scan(now=datetime.fromtimestamp(now_ts, tz=timezone.utc), mtime_now=now_ts)
     assert read_calls == 0
     assert res.convs[0].title == "Create 3 small text files a.txt b.txt c.txt in the workspace"
-    assert res.convs[0].workspace_paths == []
 
 
 PLANNER_WITH_THINKING = {

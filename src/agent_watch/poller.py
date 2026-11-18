@@ -159,7 +159,6 @@ class Poller:
                 conv_id=c.conv_id,
                 first_input_ts=c.first_input_ts,
                 first_input_text=c.first_input_text,
-                workspace_paths=list(c.workspace_paths),
             )
             for c in ar.convs
         ]
