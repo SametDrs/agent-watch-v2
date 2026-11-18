@@ -429,6 +429,7 @@ class ClaudeScanner:
             body=json.dumps(inp),
             model=model,
             effort=effort,
+            tool_id=tid or None,
         )
         if name in SHELL_TOOLS and tid:
             self._shell[tid] = ShellCall(sid, key, tid, ts, None, cwd, str(inp.get("command", "")))
@@ -479,6 +480,7 @@ class ClaudeScanner:
                     summary=summary,
                     body=body,
                     effort=effort,
+                    tool_id=tid or None,
                 )
             elif btype == "text" and not is_meta:
                 self._emit_prompt(ts, sid, key, block.get("text"), effort)

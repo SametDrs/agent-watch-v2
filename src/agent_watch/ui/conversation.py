@@ -46,10 +46,11 @@ BORDER = "#2a3142"
 TEXT = "#e6e9ef"
 MUTED = "#9aa3b5"
 
-TOOL_ARGS_CAP = 500
 TOOL_RESULT_CAP = 800
 EMPTY_THINKING_TEXT = "(thought — text not stored by this tool)"
 
+_RESULT_MAX_LINES = 12
+_RESULT_MAX_LINE_CHARS = 400
 _ARG_MAX_LINES = 4
 _ARG_MAX_CHARS = 200
 _ARG_MAX_KEYS = 12
@@ -83,6 +84,27 @@ def _clip_body(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "…"
+
+
+def _clip_lines(
+    text: str, max_lines: int = _RESULT_MAX_LINES, max_chars: int = _RESULT_MAX_LINE_CHARS
+) -> tuple[str, int]:
+    """Keep the first max_lines lines (each cut to max_chars with an ellipsis); also return the dropped line count."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    while lines and not lines[-1]:
+        lines.pop()
+    hidden = max(0, len(lines) - max_lines)
+    kept = [ln if len(ln) <= max_chars else ln[: max_chars - 1] + "…" for ln in lines[:max_lines]]
+    return "\n".join(kept), hidden
+
+
+def _clipped_text(text: str, style: str) -> list[RenderableType]:
+    """Text clipped by _clip_lines, followed by a DIM '… N more lines' row when lines were dropped."""
+    clipped, hidden = _clip_lines(text)
+    parts: list[RenderableType] = [Text(clipped, style=style)]
+    if hidden:
+        parts.append(Text(f"… {hidden} more line{'s' if hidden != 1 else ''}", style=DIM))
+    return parts
 
 
 def _infer_source(agent_key: str) -> Source:
@@ -369,7 +391,7 @@ def _render_tool_panel(args_dict: dict[str, Any] | None, raw_body: Any) -> Panel
     if not raw_text:
         return None
     return Panel(
-        Text(_clip_body(raw_text, TOOL_ARGS_CAP), style=TEXT),
+        Group(*_clipped_text(raw_text, TEXT)),
         box=box.ROUNDED,
         border_style=BORDER,
         padding=(0, 1),
@@ -451,7 +473,7 @@ def _result_full(end: Event | None) -> list[RenderableType]:
         _label_row(Text(label, style=err_color if is_err else DIM), end.ts)
     ]
     if end.body:
-        parts.append(Text(_clip_body(end.body, TOOL_RESULT_CAP), style=err_color if is_err else MUTED))
+        parts.extend(_clipped_text(end.body, err_color if is_err else MUTED))
     return parts
 
 
@@ -636,10 +658,17 @@ class TranscriptLog(RichLog):
         return self._append(_Block(key=key, kind="plain", ev=ev, renderable=renderable))
 
     def _match_open_call(self, end: Event) -> _Block | None:
-        """Pair a result with the oldest unanswered call of the same tool (FIFO)."""
+        """Pair a result with its call: by tool_id when both sides carry one, else oldest same-name call (FIFO)."""
+        if end.tool_id:
+            for i, block in enumerate(self._open_calls):
+                if block.start_ev is not None and block.start_ev.tool_id == end.tool_id:
+                    return self._open_calls.pop(i)
         name = end.tool or ""
         for i, block in enumerate(self._open_calls):
-            call_name = (block.start_ev.tool if block.start_ev is not None else None) or ""
+            start = block.start_ev
+            if end.tool_id and start is not None and start.tool_id:
+                continue  # both have ids and they differ: never pair by name
+            call_name = (start.tool if start is not None else None) or ""
             if not name or not call_name or name == call_name:
                 return self._open_calls.pop(i)
         return None

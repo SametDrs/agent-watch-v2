@@ -913,3 +913,45 @@ def test_dedup_cleared_across_turns_and_effort_reinferred_on_model_change() -> N
     )
     assert len(p4) == 1 and p4[0].status is Status.RUNNING
     assert len(t4) == 1
+
+
+def test_codex_tool_events_carry_call_id() -> None:
+    state: dict[str, object] = {}
+    start = parse_rollout_line(
+        {
+            "timestamp": "2026-11-18T01:00:00Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "shell_command",
+                "arguments": '{"command": "ls"}',
+                "call_id": "call_xyz",
+            },
+        },
+        "r1",
+        "s1",
+        state,
+    )
+    end = parse_rollout_line(
+        {
+            "timestamp": "2026-11-18T01:00:01Z",
+            "type": "response_item",
+            "payload": {"type": "function_call_output", "call_id": "call_xyz", "output": "ok"},
+        },
+        "r1",
+        "s1",
+        state,
+    )
+    assert start[0].tool_id == "call_xyz" and end[0].tool_id == "call_xyz"
+
+    no_id = parse_rollout_line(
+        {
+            "timestamp": "2026-11-18T01:00:02Z",
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "shell_command", "arguments": "{}"},
+        },
+        "r1",
+        "s1",
+        state,
+    )
+    assert no_id[0].tool_id is None

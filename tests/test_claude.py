@@ -534,3 +534,39 @@ def test_eviction_on_session_stop_and_resume(tmp_path: Path, monkeypatch) -> Non
     assert rapid.reset_session_keys == {V2_SID}
     assert any(e.agent_key == main_agent_key(V2_SID) and e.kind is EventKind.PROMPT for e in rapid.events)
     assert any(e.agent_key == SUB_KEY and e.kind is EventKind.END for e in rapid.events)
+
+
+def test_tool_ids_populated_on_start_and_end(tmp_path: Path) -> None:
+    home = tmp_path / "ids"
+    proj = home / "projects" / SLUG
+    _write_session_file(home, V2_SID)
+    _write_jsonl(proj / f"{V2_SID}.jsonl", [
+        {
+            "type": "assistant",
+            "timestamp": "2026-11-17T16:00:01Z",
+            "message": {
+                "role": "assistant",
+                "model": "claude-sonnet-5-5",
+                "content": [
+                    {"type": "tool_use", "id": "tu_a", "name": "Bash", "input": {"command": "a"}},
+                    {"type": "tool_use", "id": "tu_b", "name": "Bash", "input": {"command": "b"}},
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-11-17T16:00:02Z",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_b", "content": "rb"},
+                    {"type": "tool_result", "tool_use_id": "tu_a", "content": "ra"},
+                ],
+            },
+        },
+    ])
+    res = ClaudeScanner(home).scan(NOW)
+    starts = [e for e in res.events if e.kind is EventKind.TOOL_START]
+    ends = [e for e in res.events if e.kind is EventKind.TOOL_END]
+    assert [e.tool_id for e in starts] == ["tu_a", "tu_b"]
+    assert [(e.tool_id, e.body) for e in ends] == [("tu_b", "rb"), ("tu_a", "ra")]
