@@ -116,3 +116,7 @@ Set `AGENT_WATCH_AUTO_OPEN=0` to disable auto-open while keeping `/agent-watch`.
 - It never writes to or modifies `~/.claude`, `~/.codex`, or `~/.gemini`.
 - It does not send messages, pick models/modes, or start/stop agents from the UI.
 - Only launcher lock/config state is stored under `%LOCALAPPDATA%\agent-watch`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
