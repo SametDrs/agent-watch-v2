@@ -20,7 +20,9 @@ from agent_watch.model import UNLINKED_SESSION_KEY, Agent, Event, Session, Statu
 from agent_watch.poller import UNLINKED_NAME
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.store import Store
-from agent_watch.ui.theme import ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT, short_model
+from agent_watch.ui.theme import (
+    ACCENT, BG, BORDER, DIM, MUTED, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT, fmt_duration, short_model,
+)
 from agent_watch.ui.widgets import AgentCard, AgentList, CardGrid, EventLog, QuotaPanel, TotalsBar
 
 EMPTY_TEXT = "Henüz ajan yok — Claude, agy ya da Codex çalıştırınca burada görünecek."
@@ -119,6 +121,7 @@ class DashboardScreen(Screen):
         Binding("shift+tab", "prev_tab", "Önceki", show=False, priority=True),
         Binding("/", "open_filter", "Filtre"),
         Binding("escape", "escape", "Temizle", show=False),
+        Binding("n", "toggle_notifications", "Bildirim"),
         Binding("v", "toggle_compact", "Kompakt"),
         Binding("o", "open_transcript", "Klasör"),
         Binding("r", "refresh_quota", "Kota"),
@@ -136,6 +139,8 @@ class DashboardScreen(Screen):
         self._quota: dict[str, tuple[float | None, datetime | None]] = {}
         self._codex_limits: CodexLimits | None = None
         self.filter_text = ""  # global across tabs; applied to cards, list and timeline
+        self.notifications_enabled = True
+        self._seen_status: dict[str, Status] = {}
         self._ready = False
 
     def compose(self) -> ComposeResult:
@@ -156,6 +161,7 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         self._ready = True
+        self._check_transitions(notify=False)  # prime: agents present now never notify
         self.set_interval(1.0, self._tick)
         self._rebuild_tabs()
         self._refresh_view()
@@ -293,11 +299,55 @@ class DashboardScreen(Screen):
         """Refresh tabs and, when the selected session changed, its widgets."""
         if not self._ready:
             return
+        self._check_transitions()
         switched = self._rebuild_tabs()
         if switched or (self.selected_key is not None and self.selected_key in changed):
             self._refresh_view(now)
         if switched:
             self._repopulate_log()
+
+    # ----- notifications -----
+
+    def _check_transitions(self, notify: bool = True) -> None:
+        """Notify when a known, unfinished agent became done/failed since the last check.
+
+        Agents first seen already finished (first load, or discovered late) and the main
+        agent never notify; only transitions observed during this run do.
+        """
+        current: dict[str, Status] = {}
+        finished: list[Agent] = []
+        for session in self.store.sessions.values():
+            for agent in session.agents.values():
+                current[agent.key] = agent.status
+                before = self._seen_status.get(agent.key)
+                if (
+                    before is not None
+                    and before not in (Status.DONE, Status.FAILED)
+                    and agent.status in (Status.DONE, Status.FAILED)
+                    and not agent.is_main
+                    and agent.key != main_agent_key(agent.session_key)
+                ):
+                    finished.append(agent)
+        self._seen_status = current
+        if notify and self.notifications_enabled:
+            for agent in finished:
+                self._notify_finished(agent)
+
+    def _notify_finished(self, agent: Agent) -> None:
+        failed = agent.status == Status.FAILED
+        duration = fmt_duration(agent.duration_seconds())
+        self.app.notify(
+            f"{agent.status.value} · {duration}",
+            title=agent.title or agent.key,
+            severity="error" if failed else "information",
+        )
+        if failed:
+            self.app.bell()
+
+    def action_toggle_notifications(self) -> None:
+        self.notifications_enabled = not self.notifications_enabled
+        self._render_header()
+        self.app.notify("Bildirimler açık" if self.notifications_enabled else "Bildirimler kapalı")
 
     # ----- events -----
 
@@ -360,6 +410,9 @@ class DashboardScreen(Screen):
         text.append(" · ", style=DIM)
         text.append("● ", style=STATUS_COLORS[Status.DONE])
         text.append("live", style=MUTED)
+        if not self.notifications_enabled:
+            text.append(" · ", style=DIM)
+            text.append("notify off", style=DIM)
         self.query_one("#header", Static).update(text)
 
     def _tick(self) -> None:

@@ -409,3 +409,79 @@ async def test_filter_survives_enter_polls_and_tab_switch() -> None:
         await pilot.press("1")
         await pilot.pause()
         assert set(grid.cards) == {"a1", "a3", "a4"}
+
+
+class NotifyHost(Host):
+    def __init__(self, store: Store) -> None:
+        super().__init__(store)
+        self.toasts: list[tuple[str, str, str]] = []
+        self.bells = 0
+
+    def notify(self, message, *, title="", severity="information", **kw):  # type: ignore[override]
+        self.toasts.append((title, str(message), severity))
+
+    def bell(self) -> None:
+        self.bells += 1
+
+
+def _finish_store() -> Store:
+    store = Store()
+    store.upsert_session("s1", name="proj")
+    store.apply([
+        ev("s1", main_agent_key("s1"), EventKind.START, 0, title="proj"),
+        ev("s1", "a1", EventKind.START, 0, title="Builder"),
+        ev("s1", "a2", EventKind.START, 0, title="Checker"),
+        ev("s1", "old", EventKind.START, 0, title="Already done"),
+        ev("s1", "old", EventKind.END, 5, status=Status.DONE),
+    ])
+    return store
+
+
+async def test_notifications_on_transitions_only() -> None:
+    store = _finish_store()
+    app = NotifyHost(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        # first load: nothing finished is announced
+        screen.refresh_sessions({"s1"})
+        assert app.toasts == []
+        changed = store.apply([
+            ev("s1", "a1", EventKind.END, 83, status=Status.DONE),
+            ev("s1", main_agent_key("s1"), EventKind.END, 90, status=Status.DONE),
+        ])
+        screen.refresh_sessions(changed)
+        assert app.toasts == [("Builder", "done · 1:23", "information")]
+        assert app.bells == 0
+        changed = store.apply([ev("s1", "a2", EventKind.END, 10, status=Status.FAILED)])
+        screen.refresh_sessions(changed)
+        assert app.toasts[-1] == ("Checker", "failed · 0:10", "error")
+        assert app.bells == 1
+        # no repeats on later refreshes
+        screen.refresh_sessions({"s1"})
+        assert len(app.toasts) == 2
+
+
+async def test_notifications_toggle_with_n() -> None:
+    store = _finish_store()
+    app = NotifyHost(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen.notifications_enabled
+        await pilot.press("n")
+        assert not screen.notifications_enabled
+        assert app.toasts[-1][1] == "Bildirimler kapalı"
+        n_before = len(app.toasts)
+        changed = store.apply([ev("s1", "a1", EventKind.END, 8, status=Status.FAILED)])
+        screen.refresh_sessions(changed)
+        assert len(app.toasts) == n_before and app.bells == 0
+        await pilot.press("n")
+        assert screen.notifications_enabled
+        assert app.toasts[-1][1] == "Bildirimler açık"
+        # the muted transition is not replayed
+        screen.refresh_sessions({"s1"})
+        assert app.toasts[-1][1] == "Bildirimler açık"
+        changed = store.apply([ev("s1", "a2", EventKind.END, 9, status=Status.DONE)])
+        screen.refresh_sessions(changed)
+        assert app.toasts[-1][0] == "Checker"
