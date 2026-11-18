@@ -431,3 +431,31 @@ async def test_event_log_clear_resets_merge_state_and_keeps_following():
         log.add_event(Event(ts=T0, session_key="s", agent_key="a", kind=EventKind.TEXT, summary="n59"), "t", "#f00")
         await pilot.pause()
         assert log.scroll_y >= log.max_scroll_y - 1
+
+
+def test_card_token_line_shows_cost_for_priced_model():
+    agent = make_agent(key="claude:op1", model="claude-opus-5-5", in_tokens=45_000, out_tokens=7_000)
+    t = AgentCard(agent).render_agent(T0 + timedelta(seconds=95)).plain
+    assert "52k tok · 7k out · ≈ $0.32" in t
+
+
+def test_card_token_line_no_cost_for_unpriced_model():
+    agent = make_agent(key="agy:g1", source=Source.AGY, model="gemini-4-flash", in_tokens=45_000, out_tokens=7_000)
+    t = AgentCard(agent).render_agent(T0 + timedelta(seconds=95)).plain
+    assert "52k tok · 7k out" in t and "≈" not in t and "$" not in t
+
+
+async def test_totals_bar_cost_exact_and_partial():
+    app = WidgetApp()
+    async with app.run_test() as pilot:
+        bar = app.query_one("#totals", TotalsBar)
+        base = {"agents_done": 1, "agents_total": 2, "running": 0, "calls": 3, "out_tokens": 1000}
+        bar.update_totals({**base, "cost": 12.3, "cost_partial": False}, 60)
+        await pilot.pause()
+        assert text_of(bar).endswith("time 1:00 · cost ≈ $12.30")
+        bar.update_totals({**base, "cost": 12.3, "cost_partial": True}, 60)
+        await pilot.pause()
+        assert text_of(bar).endswith("cost ≈ $12.30+")
+        bar.update_totals({**base, "cost": None, "cost_partial": True}, 60)
+        await pilot.pause()
+        assert "cost" not in text_of(bar)

@@ -15,6 +15,7 @@ from textual.widgets.option_list import Option
 
 from agent_watch import config
 from agent_watch.model import Agent, Event, EventKind, Source, Status, main_agent_key
+from agent_watch.pricing import estimate_cost, fmt_cost
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.ui.card_mascot import (
     CANVAS_W,
@@ -197,6 +198,12 @@ class AgentCard(Static):
         line2.append(head, style=MUTED)
         line2.append(" · ", style=DIM)
         line2.append(tail, style=MUTED)
+        cost = estimate_cost(agent)
+        if cost is not None and (agent.in_tokens or agent.out_tokens):
+            cost_str = fmt_cost(cost)
+            if cell_len(head) + 3 + cell_len(tail) + 3 + cell_len(cost_str) <= width:
+                line2.append(" · ", style=DIM)
+                line2.append(cost_str, style=MUTED)
 
         # Line 3: status icon + last_action
         line3 = Text(no_wrap=True)
@@ -563,6 +570,11 @@ class TotalsBar(Static):
             text.append(f"{label} ", style=MUTED)
             val_color = STATUS_COLORS[Status.RUNNING] if is_running else TEXT
             text.append(value, style=f"bold {val_color}")
+        cost = totals.get("cost")
+        if cost is not None:
+            text.append(" · ", style=DIM)
+            text.append("cost ", style=MUTED)
+            text.append(fmt_cost(cost) + ("+" if totals.get("cost_partial") else ""), style=MUTED)
         self.update(text)
 
 

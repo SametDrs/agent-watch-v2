@@ -504,3 +504,26 @@ async def test_event_log_uses_short_title_and_skips_usage() -> None:
         assert len(rows) == 1
         assert "Produce an interface map of this project" in rows[0]
         assert "/plan" not in rows[0] and "GOAL" not in rows[0]
+
+
+async def test_totals_cost_sums_priced_agents_and_marks_partial() -> None:
+    store = Store()
+    store.upsert_session("s1", name="proj")
+    store.apply([
+        ev("s1", "a1", EventKind.START, 0, title="A", model="claude-opus-5-5"),
+        ev("s1", "a1", EventKind.USAGE, 1, tokens_in=1_000_000, tokens_out=0),
+        ev("s1", "a2", EventKind.START, 2, title="B", model="claude-sonnet-5-5"),
+        ev("s1", "a2", EventKind.USAGE, 3, tokens_in=1_000_000, tokens_out=0),
+    ])
+    app = Host(store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "cost ≈ $6.00" in app.screen.query_one(TotalsBar).render().plain
+        assert "$6.00+" not in app.screen.query_one(TotalsBar).render().plain
+        store.apply([
+            ev("s1", "agy:g", EventKind.START, 4, title="G", model="gemini-4-flash"),
+            ev("s1", "agy:g", EventKind.USAGE, 5, tokens_in=500, tokens_out=500),
+        ])
+        app.screen._refresh_view()
+        await pilot.pause()
+        assert "cost ≈ $6.00+" in app.screen.query_one(TotalsBar).render().plain

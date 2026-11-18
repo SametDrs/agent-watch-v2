@@ -18,6 +18,7 @@ from textual.widgets import Footer, Input, Static
 from agent_watch.config import model_color
 from agent_watch.model import UNLINKED_SESSION_KEY, Agent, Event, Session, Status, main_agent_key
 from agent_watch.poller import UNLINKED_NAME
+from agent_watch.pricing import estimate_cost
 from agent_watch.sources.codex import CodexLimits
 from agent_watch.store import Store
 from agent_watch.titles import short_title
@@ -50,6 +51,14 @@ def agent_matches(agent: Agent, query: str) -> bool:
         (title, agent.source.value, agent.status.value, agent.model, short_model(agent.model) if agent.model else "")
     ).lower()
     return all(term in hay for term in terms)
+
+
+def _cost_totals(agents: list[Agent]) -> dict:
+    """Sum estimated cost over priced agents; flag partial when token-using agents are unpriced."""
+    costs = [(a, estimate_cost(a)) for a in agents]
+    priced = [c for _, c in costs if c is not None]
+    partial = any(c is None and (a.in_tokens or a.out_tokens) for a, c in costs)
+    return {"cost": sum(priced) if priced else None, "cost_partial": partial}
 
 
 class TabBar(Static):
@@ -298,7 +307,8 @@ class DashboardScreen(Screen):
         self.query_one(AgentList).set_agents(agents, default_key=self.selected_agent_key)
         starts = [a.started for a in all_agents if a.started is not None]
         elapsed = (now - min(starts)).total_seconds() if starts else None
-        totals = self.store.totals(self.selected_key or "")
+        totals: dict = dict(self.store.totals(self.selected_key or ""))
+        totals.update(_cost_totals(all_agents))
         self.query_one(TotalsBar).update_totals(totals, elapsed)
         self._apply_card_selection()
         self._refresh_timeline(now, agents, all_agents)
