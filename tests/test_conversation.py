@@ -95,14 +95,14 @@ def test_render_event_kinds() -> None:
     c.print(render_event(ev(EventKind.TOOL_START, tool="Bash", summary="Bash pytest", body=long_args)))
     tstart_out = c.export_text().replace("\n", "")
     assert "▾ Bash pytest" in tstart_out
-    assert tstart_out.count("A") == 500
+    assert tstart_out.count("A") == 399  # one line clipped to 400 chars incl. the ellipsis
     assert "Z" not in tstart_out
 
     long_res = "B" * 800 + "Q" * 120
     c.print(render_event(ev(EventKind.TOOL_END, tool="Bash", body=long_res)))
     tend_out = c.export_text().replace("\n", "")
     assert "↳ result" in tend_out
-    assert tend_out.count("B") == 801  # 800 clipped body chars + the B of the Bash header
+    assert tend_out.count("B") == 400  # 399 body chars kept (line cut at 400 incl. ellipsis) + the B of the Bash header
     assert "Q" not in tend_out
 
     err_renderable = render_event(ev(EventKind.ERROR, summary="crashed", body="traceback"))
@@ -907,3 +907,71 @@ async def test_tool_result_with_unknown_id_is_not_paired_by_name() -> None:
 
 def test_event_tool_id_defaults_to_none() -> None:
     assert ev(EventKind.TOOL_START).tool_id is None
+
+
+# ---- clipped expanded results ----
+
+
+def test_clip_lines_limits_lines_and_width() -> None:
+    from agent_watch.ui.conversation import _clip_lines
+
+    body = "\n".join(f"line-{i}" for i in range(30))
+    clipped, hidden = _clip_lines(body)
+    assert clipped.splitlines() == [f"line-{i}" for i in range(12)] and hidden == 18
+    assert _clip_lines("a\nb\n\n") == ("a\nb", 0)
+    assert _clip_lines("x" * 1000)[0] == "x" * 399 + "…"
+    assert _clip_lines("one\r\ntwo") == ("one\ntwo", 0)
+
+
+async def test_expanded_result_is_clipped_to_twelve_lines() -> None:
+    store = Store()
+    out = "\n".join(f"out-line-{i}" for i in range(30)) + "\n" + "W" * 2000
+    store.apply(_tool_pair(0, out=out))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 80)) as pilot:
+        await pilot.pause()
+        log = app.screen.query_one(TranscriptLog)
+        # Collapsed preview is untouched.
+        assert "more line" not in _log_text(app.screen)
+        await pilot.press("j")
+        await pilot.press("enter")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert "out-line-11" in text and "out-line-12" not in text
+        assert "… 19 more lines" in text
+        assert "W" * 500 not in text
+        assert len(log.lines) < 40
+
+
+async def test_expanded_result_exactly_at_limit_has_no_more_marker() -> None:
+    store = Store()
+    store.apply(_tool_pair(0, out="\n".join(f"r{i}" for i in range(12))))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert "r11" in text and "more line" not in text
+
+
+async def test_expanded_single_extra_line_uses_singular() -> None:
+    store = Store()
+    store.apply(_tool_pair(0, out="\n".join(f"r{i}" for i in range(13))))
+    app = _ConvHost(store, "claude:a1")
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        text = _log_text(app.screen)
+        assert "… 1 more line" in text and "more lines" not in text
+
+
+def test_expanded_raw_args_body_is_clipped() -> None:
+    from agent_watch.ui.conversation import render_tool_block
+
+    start = ev(EventKind.TOOL_START, 0, tool="Edit", summary="Edit", body="\n".join(f"patch-{i}" for i in range(40)))
+    c = Console(record=True, width=100, force_terminal=False)
+    c.print(render_tool_block(start, None, expanded=True))
+    out = c.export_text()
+    assert "patch-11" in out and "patch-12" not in out and "… 28 more lines" in out
