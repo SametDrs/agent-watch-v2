@@ -39,6 +39,7 @@ def build_home(tmp_path: Path, live: bool = True) -> Path:
         data = json.loads((FIX / "sessions_pid.json").read_text(encoding="utf-8"))
         data["pid"] = os.getpid()
         data["startedAt"] = int(psutil.Process().create_time() * 1000)
+        data.pop("procStart", None)
         (home / "sessions").mkdir()
         (home / "sessions" / f"{os.getpid()}.json").write_text(json.dumps(data), encoding="utf-8")
     return home
@@ -217,6 +218,33 @@ def _write_session_file(
         encoding="utf-8",
     )
     return path
+
+
+def test_idle_background_session_is_not_live(tmp_path: Path) -> None:
+    """Arka plan (kind=bg) oturumu boştayken pencere yoktur; canlı sayılmaz."""
+    home = tmp_path / "bg"
+    path = _write_session_file(home, "bg-idle", status="idle")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["kind"] = "bg"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert ClaudeScanner(home)._live_sessions() == {}
+
+    data["status"] = "busy"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert "bg-idle" in ClaudeScanner(home)._live_sessions()
+
+
+def test_session_with_late_started_at_is_live_via_proc_start(tmp_path: Path) -> None:
+    """startedAt süreç başlangıcından saniyelerce sonra yazılabilir; procStart kesindir."""
+    home = tmp_path / "late"
+    create_ms = psutil.Process().create_time() * 1000
+    path = _write_session_file(home, "late-sid", started_at=int(create_ms) + 6000)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["procStart"] = str(int((create_ms + 11_644_473_600_000) * 10_000))
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert "late-sid" in ClaudeScanner(home)._live_sessions()
 
 
 def _build_v2_home(tmp_path: Path) -> Path:

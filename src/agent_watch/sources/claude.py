@@ -160,6 +160,9 @@ class ClaudeScanner:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict) or not data.get("sessionId"):
                     continue
+                # Arka plan işi bitince süreç yaşamaya devam eder ama penceresi yoktur.
+                if data.get("kind") == "bg" and data.get("status") != "busy":
+                    continue
                 pid, started_ms = self._proc_id(data)
                 if pid_alive(pid, started_ms):
                     live[str(data["sessionId"])] = data
@@ -170,6 +173,13 @@ class ClaudeScanner:
     @staticmethod
     def _proc_id(data: dict[str, Any]) -> tuple[int, int | None]:
         """Extract a process identity tuple (pid, startedAt) from session metadata."""
+        # startedAt süreçten saniyelerce sonra yazılır; procStart (Windows FILETIME) süreç zamanıdır.
+        try:
+            filetime = int(data.get("procStart", ""))
+        except (TypeError, ValueError):
+            filetime = 0
+        if filetime > 10**17:
+            return (int(data["pid"]), filetime // 10_000 - 11_644_473_600_000)
         started = data.get("startedAt")
         started_ms = started if isinstance(started, int) and not isinstance(started, bool) else None
         return (int(data["pid"]), started_ms)

@@ -30,7 +30,7 @@ The script runs the real UI on a fake in-memory store; it never reads `~/.claude
 
 ## Features
 
-- **Separate window, live session tabs:** Tracks active Claude Code sessions automatically; finished agents remain visible on their session tab until the session closes (plus a 60s grace period).
+- **Separate window, live session tabs:** Tracks active Claude Code sessions automatically; finished agents remain visible on their session tab until the session closes (plus a 60s grace period). Idle background sessions (`kind: "bg"`, e.g. finished background jobs whose process stays resident) are not shown; they appear only while busy. Liveness is checked against the process creation time (`procStart`), so freshly started sessions show up immediately.
 - **One card per agent:** Displays source (`claude`, `agy`, `codex`) with an animated pixel mascot, model, effort level, elapsed time, cumulative tokens (`in + out` and `out`), status, and current step. Nested launches show `← <parent>`.
 - **Read-only conversation view:** Open any card to inspect the chronological transcript (`▶ to agent`, `◀ agent`, thinking when logged, tool calls and truncated results, plus `in / cached / out / reasoning` token breakdown) with live tail-following while running.
 - **Cost estimate:** Cards and the totals bar show an estimated cost (`≈ $0.18`) for Claude models only; `agy` and Codex agents are not priced, so a total with unpriced token usage is marked with a trailing `+`. It is a list-price estimate, not a bill.
