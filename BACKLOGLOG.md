@@ -27,3 +27,5 @@
 - Textual `run_test` içinde `print()` yakalanır; uygulama çalışırken `main()` çıktısını test etmek için `contextlib.redirect_stdout` kullan.
 - agy `--print-timeout` 580 s'yi aşan task'lar `agy --continue` ile aynı oturumda bitirilir.
 - Snapshot testleri ilk üretimde `--snapshot-update` ister; agy shell çalıştırmadığı için yönetici üretir.
+- 2026-11-18 `a9bbf46` public `main` olarak gönderildi (tek commit, tarama temiz). Tam geçmiş yerel `history-backup` dalında; kullanıcı bu hâliyle kabul etti. Yerel `main` origin'den ayrıştı; origin'e push edilmez.
+- Bazı küçük düzeltmeler (≤3 dosya) agy yerine yönetici tarafından yazıldı; kullanıcı kabul etti.
