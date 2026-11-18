@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from test_claude import AGENTS, SID, build_home
-from test_poller import LINKED_CONV, SUB_ID, add_agy_shell_call, place_agy
+from test_poller import LINKED_CONV, _FakeProc, SUB_ID, add_agy_shell_call, place_agy
 import pytest
 
 from agent_watch import __version__, launcher
 from agent_watch.app import AgentWatchApp, build_parser, main
-from agent_watch.model import Status
+from agent_watch.model import Event, EventKind, Status, main_agent_key
 from agent_watch.poller import PollResult
 from agent_watch.ui.dashboard import DashboardScreen
 from agent_watch.ui.theme import ACCENT, BG, BORDER, STATUS_COLORS, SURFACE, SURFACE_HI, TEXT
@@ -252,3 +252,78 @@ async def test_agent_watch_theme_and_scrollbars(tmp_path: Path) -> None:
         assert grid.styles.scrollbar_background.hex.lower() == SURFACE
         assert grid.styles.scrollbar_color_hover.hex.lower() == ACCENT
         assert grid.styles.scrollbar_color_active.hex.lower() == ACCENT
+
+
+def _bare_app(tmp_path: Path) -> AgentWatchApp:
+    return AgentWatchApp(
+        claude_home=tmp_path / "claude",
+        agy_home=tmp_path / "agy",
+        codex_home=tmp_path / "codex",
+        no_quota=True,
+        proc_provider=lambda: [],
+    )
+
+
+def test_transcript_dir_codex_uses_rollout_folder(tmp_path: Path) -> None:
+    rid = "00000000-0000-0000-0000-00000000c777"
+    day = tmp_path / "codex" / "sessions" / "2026" / "01" / "02"
+    day.mkdir(parents=True)
+    (day / f"rollout-2026-01-02T03-04-05-{rid}.jsonl").write_text("{}\n", encoding="utf-8")
+    app = _bare_app(tmp_path)
+    assert app.transcript_dir(f"codex:{rid}") == day
+    assert app.transcript_dir("codex:missing") is None
+
+
+def test_transcript_dir_main_agent_uses_session_log_folder(tmp_path: Path) -> None:
+    claude_home = build_home(tmp_path)
+    app = AgentWatchApp(
+        claude_home=claude_home,
+        agy_home=tmp_path / "agy",
+        codex_home=tmp_path / "codex",
+        no_quota=True,
+        proc_provider=lambda: [],
+    )
+    expected = next((claude_home / "projects").glob(f"*/{SID}.jsonl")).parent
+    assert app.transcript_dir(main_agent_key(SID)) == expected
+
+
+def test_transcript_dir_main_agent_falls_back_to_session_cwd(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    app = _bare_app(tmp_path)
+    app.store.upsert_session("sess-x", name="x", cwd=str(work))
+    app.store.apply([Event(
+        ts=datetime.now(timezone.utc), session_key="sess-x", agent_key=main_agent_key("sess-x"),
+        kind=EventKind.START,
+    )])
+    assert app.transcript_dir(main_agent_key("sess-x")) == work
+
+
+async def test_open_key_on_codex_card_opens_rollout_folder(tmp_path: Path, monkeypatch) -> None:
+    rid = "00000000-0000-0000-0000-00000000c888"
+    now = datetime.now(timezone.utc)
+    iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    day = tmp_path / "codex" / "sessions" / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+    day.mkdir(parents=True)
+    records = [
+        {"timestamp": iso, "type": "session_meta", "payload": {"id": rid, "timestamp": iso, "cwd": "/work"}},
+        {"timestamp": iso, "type": "event_msg", "payload": {"type": "user_message", "message": "<prompt>"}},
+    ]
+    (day / f"rollout-{now:%Y-%m-%dT%H-%M-%S}-{rid}.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+    opened: list[Path] = []
+    monkeypatch.setattr("agent_watch.app._open_folder", opened.append)
+    app = AgentWatchApp(
+        claude_home=tmp_path / "claude",
+        agy_home=tmp_path / "agy",
+        codex_home=tmp_path / "codex",
+        no_quota=True,
+        window_hours=24,
+        proc_provider=lambda: [_FakeProc(cmdline=["codex.exe", "exec", "<prompt>"])],
+    )
+    async with app.run_test(size=(160, 50)) as pilot:
+        assert await wait_until(pilot, lambda: f"codex:{rid}" in app.screen.query_one(CardGrid).cards, 3.0)
+        await pilot.press("o")
+        await pilot.pause()
+        assert opened == [day]

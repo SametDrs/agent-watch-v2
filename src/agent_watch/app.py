@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import logging
 import os
 import subprocess
@@ -216,14 +217,40 @@ class AgentWatchApp(App):
 
     # ---- open ----
     def transcript_dir(self, agent_key: str) -> Path | None:
-        """Return the transcript folder for an agent key, or None when unknown."""
+        """Return the folder to open for an agent key, or None when unknown.
+
+        Read-only lookups only: Claude subagents and agy use their transcript folder,
+        Codex uses the folder of its rollout file, and a main agent uses the folder of
+        its session log (falling back to the session cwd).
+        """
+        agent = self.store.find_agent(agent_key)
+        if agent is not None and agent.is_main:
+            return self._main_dir(agent.session_key)
         kind, _, ident = agent_key.partition(":")
         if kind == "agy" and ident:
             return self.agy_home / "brain" / ident
+        if kind == "codex" and ident:
+            sessions = self.codex_home / "sessions"
+            for path in sessions.glob(f"*/*/*/rollout-*{glob.escape(ident)}.jsonl"):
+                return path.parent
+            return None
         if kind == "claude" and ident:
             projects = self.claude_home / "projects"
-            for path in projects.glob(f"*/*/subagents/agent-{ident}.jsonl"):
+            for path in projects.glob(f"*/*/subagents/agent-{glob.escape(ident)}.jsonl"):
                 return path.parent
+            return None
+        if agent_key.endswith(":main"):
+            return self._main_dir(agent_key.removesuffix(":main"))
+        return None
+
+    def _main_dir(self, session_key: str) -> Path | None:
+        """Return the transcript folder of a Claude session's main agent, else its cwd."""
+        projects = self.claude_home / "projects"
+        for path in projects.glob(f"*/{glob.escape(session_key)}.jsonl"):
+            return path.parent
+        session = self.store.sessions.get(session_key)
+        if session is not None and session.cwd:
+            return Path(session.cwd)
         return None
 
     def on_dashboard_screen_open_requested(self, message: DashboardScreen.OpenRequested) -> None:
